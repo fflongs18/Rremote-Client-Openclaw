@@ -28,10 +28,25 @@ export function eventNameForChunk(chunk: ChatChunk): TaskEventName | null {
   }
 }
 
+function textForChunk(chunk: ChatChunk): string | undefined {
+  // Only keep payload text for stream/error/tool chunks.
+  // `done` / `agent_end` often carry the full final answer again; attaching that
+  // would duplicate the joined `output` stream in the UI timeline.
+  switch (chunk.type) {
+    case "text":
+    case "error":
+    case "tool_use":
+    case "tool_result":
+      return chunk.text;
+    default:
+      return undefined;
+  }
+}
+
 export function eventFromChunk(chunk: ChatChunk, context: EventContext): RemoteTaskEvent | null {
   const event = eventNameForChunk(chunk);
   if (!event) return null;
-  const text = "text" in chunk ? chunk.text : undefined;
+  const text = textForChunk(chunk);
   return {
     version: 1,
     taskId: context.taskId,

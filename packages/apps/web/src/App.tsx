@@ -81,7 +81,13 @@ export default function App() {
       .then((result) => {
         if (stopped) return;
         setStatus(result.task.status);
-        setEvents(result.events);
+        // Merge by sequence so a late history fetch cannot wipe SSE events
+        // or reintroduce duplicates when SSE already replayed the same rows.
+        setEvents((current) => {
+          const bySequence = new Map(current.map((item) => [item.sequence, item]));
+          for (const item of result.events) bySequence.set(item.sequence, item);
+          return [...bySequence.values()].sort((a, b) => a.sequence - b.sequence);
+        });
       })
       .catch((cause) => !stopped && setError(cause instanceof Error ? cause.message : String(cause)));
 
