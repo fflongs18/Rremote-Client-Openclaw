@@ -1,0 +1,29 @@
+{
+  "name": "openclaw-remote-control",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "packages/apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @remote-oc/protocol && npm run build -w @remote-oc/client && npm run build -w @remote-oc/web && npm run build -w @remote-oc/bff",
+    "dev": "concurrently -n bff,web -c cyan,magenta \"npm run dev -w @remote-oc/bff\" \"npm run dev -w @remote-oc/web\"",
+    "dev:bff": "npm run dev -w @remote-oc/bff",
+    "dev:web": "npm run dev -w @remote-oc/web",
+    "start:bff": "npm run start -w @remote-oc/bff",
+    "start:client": "npm run start -w @remote-oc/client",
+    "test": "vitest run",
+    "typecheck": "npm run build -w @remote-oc/protocol && npm run typecheck -w @remote-oc/client && npm run typecheck -w @remote-oc/web && npm run typecheck -w @remote-oc/bff"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "concurrently": "^9.2.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
