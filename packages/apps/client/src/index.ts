@@ -42,11 +42,13 @@ const hubWsUrl = process.env.JIANMU_HUB_URL || "ws://127.0.0.1:3179";
 const hubHttpUrl = process.env.JIANMU_HTTP_URL || hubWsUrl.replace(/^ws/, "http");
 const hubToken = process.env.JIANMU_AUTH_TOKEN || "";
 const controlId = process.env.WEB_CONTROL_ID || "web-control";
+// OpenClaw Gateway requires client.id from a fixed allowlist (e.g. gateway-client).
+// Do not reuse Jianmu REMOTE_CLIENT_ID here.
 const gateway = new OpenClawClient({
   url: process.env.OPENCLAW_GATEWAY_URL || "ws://127.0.0.1:18789",
   token: process.env.OPENCLAW_GATEWAY_TOKEN || undefined,
   autoReconnect: true,
-  clientId: clientId,
+  clientId: process.env.OPENCLAW_GATEWAY_CLIENT_ID || "gateway-client",
 });
 
 let socket: WebSocket | null = null;
