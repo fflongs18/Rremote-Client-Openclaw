@@ -1,4 +1,4 @@
-import "dotenv/config";
+import dotenv from "dotenv";
 import express from "express";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
@@ -11,6 +11,9 @@ import {
 } from "@remote-oc/protocol";
 import { JianmuClient } from "./jianmu.js";
 import { shouldUpdateStatus } from "./status.js";
+
+const here = dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: resolve(here, "../../../../.env") });
 
 const host = process.env.BFF_HOST || "127.0.0.1";
 const port = Number(process.env.BFF_PORT || 8787);
@@ -161,7 +164,6 @@ app.get("/api/tasks/:taskId/events", async (req, res) => {
   });
 });
 
-const here = dirname(fileURLToPath(import.meta.url));
 const webDist = resolve(here, "../../web/dist");
 app.use(express.static(webDist));
 app.get("/{*path}", (_req, res, next) => {

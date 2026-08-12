@@ -1,5 +1,7 @@
-import "dotenv/config";
+import dotenv from "dotenv";
 import os from "node:os";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
 import { OpenClawClient } from "openclaw-node";
 import {
@@ -11,6 +13,8 @@ import {
   parseJson,
 } from "@remote-oc/protocol";
 import { eventFromChunk } from "./events.js";
+
+dotenv.config({ path: resolve(dirname(fileURLToPath(import.meta.url)), "../../../../.env") });
 
 interface JianmuTask {
   id: string;
