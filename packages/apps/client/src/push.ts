@@ -1,7 +1,11 @@
-import "dotenv/config";
+import dotenv from "dotenv";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { REMOTE_CLIENT_PREFIX, type AgentPushMessage } from "@remote-oc/protocol";
+
+dotenv.config({ path: resolve(dirname(fileURLToPath(import.meta.url)), "../../../../.env") });
 
 const clientId = process.env.REMOTE_CLIENT_ID || `remote-oc-${os.hostname().toLowerCase()}`;
 const hubUrl = process.env.JIANMU_HTTP_URL || "http://127.0.0.1:3179";
