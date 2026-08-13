@@ -13,6 +13,7 @@ import {
   parseJson,
 } from "@remote-oc/protocol";
 import { eventFromChunk } from "./events.js";
+import { normalizeChatStream } from "./stream.js";
 
 dotenv.config({ path: resolve(dirname(fileURLToPath(import.meta.url)), "../../../../.env") });
 
@@ -133,11 +134,11 @@ async function executeTask(taskId: string): Promise<void> {
     active.set(taskId, running);
 
     await connectGateway();
-    const stream = gateway.chat(message, {
+    const stream = normalizeChatStream(gateway.chat(message, {
       sessionKey,
       agentId: payload?.agentId,
       clientMessageId: payload?.clientMessageId || taskId,
-    });
+    }));
 
     for await (const chunk of stream) {
       if (running.cancelled) break;

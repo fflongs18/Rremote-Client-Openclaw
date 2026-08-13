@@ -46,7 +46,7 @@ function publish(event: RemoteTaskEvent): void {
 function publishPush(push: AgentPushMessage): void {
   recentPushes.push(push);
   if (recentPushes.length > 100) recentPushes.shift();
-  const packet = `event: agent-push\\ndata: ${JSON.stringify(push)}\\n\\n`;
+  const packet = `event: agent-push\ndata: ${JSON.stringify(push)}\n\n`;
   for (const response of pushSubscribers) response.write(packet);
 }
 
@@ -181,10 +181,10 @@ app.get("/api/events", (req, res) => {
   res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
   res.flushHeaders();
-  res.write("retry: 1500\\n\\n");
-  for (const push of recentPushes) res.write(`event: agent-push\\ndata: ${JSON.stringify(push)}\\n\\n`);
+  res.write("retry: 1500\n\n");
+  for (const push of recentPushes) res.write(`event: agent-push\ndata: ${JSON.stringify(push)}\n\n`);
   pushSubscribers.add(res);
-  const heartbeat = setInterval(() => res.write(": heartbeat\\n\\n"), 20_000);
+  const heartbeat = setInterval(() => res.write(": heartbeat\n\n"), 20_000);
   req.on("close", () => {
     clearInterval(heartbeat);
     pushSubscribers.delete(res);
