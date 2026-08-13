@@ -5,6 +5,8 @@ import { dirname, resolve } from "node:path";
 import {
   REMOTE_CLIENT_PREFIX,
   type RemoteTaskEvent,
+  type AgentPushMessage,
+  isAgentPushMessage,
   isRemoteTaskEvent,
   parseJson,
   statusForEvent,
@@ -29,6 +31,8 @@ const app = express();
 app.use(express.json({ limit: "1mb" }));
 
 const subscribers = new Map<string, Set<express.Response>>();
+const pushSubscribers = new Set<express.Response>();
+const recentPushes: AgentPushMessage[] = [];
 const lastSequence = new Map<string, number>();
 const taskStatus = new Map<string, string>();
 
@@ -37,6 +41,13 @@ function publish(event: RemoteTaskEvent): void {
   if (!clients) return;
   const packet = `id: ${event.sequence}\nevent: task-event\ndata: ${JSON.stringify(event)}\n\n`;
   for (const response of clients) response.write(packet);
+}
+
+function publishPush(push: AgentPushMessage): void {
+  recentPushes.push(push);
+  if (recentPushes.length > 100) recentPushes.shift();
+  const packet = `event: agent-push\\ndata: ${JSON.stringify(push)}\\n\\n`;
+  for (const response of pushSubscribers) response.write(packet);
 }
 
 jianmu.on("taskEvent", async (event: RemoteTaskEvent) => {
@@ -57,6 +68,7 @@ jianmu.on("taskEvent", async (event: RemoteTaskEvent) => {
 });
 
 jianmu.on("clientError", (error) => console.error("Jianmu WebSocket error", error));
+jianmu.on("agentPush", (push: AgentPushMessage) => publishPush(push));
 jianmu.start();
 
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
@@ -161,6 +173,21 @@ app.get("/api/tasks/:taskId/events", async (req, res) => {
     clearInterval(heartbeat);
     set.delete(res);
     if (set.size === 0) subscribers.delete(taskId);
+  });
+});
+
+app.get("/api/events", (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders();
+  res.write("retry: 1500\\n\\n");
+  for (const push of recentPushes) res.write(`event: agent-push\\ndata: ${JSON.stringify(push)}\\n\\n`);
+  pushSubscribers.add(res);
+  const heartbeat = setInterval(() => res.write(": heartbeat\\n\\n"), 20_000);
+  req.on("close", () => {
+    clearInterval(heartbeat);
+    pushSubscribers.delete(res);
   });
 });
 

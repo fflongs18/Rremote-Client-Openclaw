@@ -39,6 +39,28 @@ export interface RemoteTaskEvent {
   timestamp: number;
 }
 
+export type PushLevel = "info" | "success" | "warning" | "error";
+
+export interface AgentPushMessage {
+  version: 1;
+  type: "agent-push";
+  messageId: string;
+  from: string;
+  to: string;
+  sessionKey?: string;
+  title?: string;
+  text: string;
+  level?: PushLevel;
+  timestamp: number;
+  artifact?: {
+    name: string;
+    url: string;
+    mime?: string;
+    size?: number;
+    expiresAt?: number;
+  };
+}
+
 export interface CancelCommand {
   version: 1;
   command: "cancel";
@@ -67,6 +89,17 @@ export function isRemoteTaskEvent(value: unknown): value is RemoteTaskEvent {
     typeof event.event === "string" &&
     taskEventNames.includes(event.event as TaskEventName) &&
     typeof event.timestamp === "number"
+  );
+}
+
+export function isAgentPushMessage(value: unknown): value is AgentPushMessage {
+  if (!value || typeof value !== "object") return false;
+  const message = value as Partial<AgentPushMessage>;
+  return (
+    message.version === 1 && message.type === "agent-push" &&
+    typeof message.messageId === "string" && typeof message.from === "string" &&
+    typeof message.to === "string" && typeof message.text === "string" &&
+    typeof message.timestamp === "number"
   );
 }
 

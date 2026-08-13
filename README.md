@@ -97,3 +97,21 @@ npm test
 npm run typecheck
 npm run build
 ```
+
+## 远端主动推送（第一版）
+
+远端电脑可以不依赖主控先发任务，直接把定时状态、报告摘要或产物通知推送到主控页面。推送命令在远端项目目录执行：
+
+```bash
+npm run push -- "Mac mini 构建完成，测试全部通过"
+```
+
+可选环境变量：
+
+```dotenv
+PUSH_TITLE=构建结果
+PUSH_LEVEL=success
+PUSH_SESSION_KEY=rc_mac-mini_项目分析_20260813_1124_a7f2
+```
+
+`PUSH_SESSION_KEY` 设置后，消息会自动追加到主控对应会话；不设置则进入主控右上角的“远端推送”通知面板。命令可以由 macOS `launchd`、Windows 任务计划或 cron 定时调用。当前第一版支持文本通知，文件产物仍建议先上传到可访问的文件服务，再推送下载地址。

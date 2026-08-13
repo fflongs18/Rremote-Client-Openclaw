@@ -3,6 +3,8 @@ import WebSocket from "ws";
 import {
   type JianmuMessage,
   type RemoteTaskEvent,
+  type AgentPushMessage,
+  isAgentPushMessage,
   isRemoteTaskEvent,
   parseJson,
 } from "@remote-oc/protocol";
@@ -82,6 +84,8 @@ export class JianmuClient extends EventEmitter {
       if (message.type !== "message" || typeof message.content !== "string") return;
       const event = parseJson<RemoteTaskEvent>(message.content);
       if (isRemoteTaskEvent(event)) this.emit("taskEvent", event, message);
+      const push = parseJson<AgentPushMessage>(message.content);
+      if (isAgentPushMessage(push)) this.emit("agentPush", push, message);
     });
 
     ws.on("close", () => this.scheduleReconnect());
