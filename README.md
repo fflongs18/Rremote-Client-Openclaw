@@ -55,7 +55,7 @@ npm run build
 npm run start:bff
 ```
 
-打开 [http://127.0.0.1:8787](http://127.0.0.1:8787)。开发模式可使用 `npm run dev`，前端地址为 `http://127.0.0.1:5173`。
+打开 `http://127.0.0.1:<BFF_PORT>`（端口见根目录 `.env` 的 `BFF_PORT`，默认示例为 `8788`）。开发模式可使用 `npm run dev`，前端地址为 `http://127.0.0.1:5173`，`/api` 会按同一 `.env` 代理到 BFF。
 
 ## 3. Mac 启动 Remote Client
 
