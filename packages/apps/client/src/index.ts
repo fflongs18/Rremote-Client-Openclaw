@@ -50,6 +50,9 @@ const gateway = new OpenClawClient({
   token: process.env.OPENCLAW_GATEWAY_TOKEN || undefined,
   autoReconnect: true,
   clientId: process.env.OPENCLAW_GATEWAY_CLIENT_ID || "gateway-client",
+  // openclaw-node defaults to $HOME, which is unset on native Windows.
+  deviceIdentityPath: process.env.OPENCLAW_DEVICE_IDENTITY_PATH
+    || resolve(os.homedir(), ".openclaw", "device-identity.json"),
 });
 
 let socket: WebSocket | null = null;
@@ -71,6 +74,9 @@ gateway.on("disconnected", () => {
   console.warn("OpenClaw Gateway disconnected");
 });
 gateway.on("error", (error) => console.error("OpenClaw Gateway error", error));
+gateway.on("pairingRequired", (info) => {
+  console.warn("OpenClaw device pairing required; approve this client in OpenClaw Hub/Tray", info);
+});
 
 function messageId(prefix: string): string {
   return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
