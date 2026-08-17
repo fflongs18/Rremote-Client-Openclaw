@@ -50,6 +50,9 @@ const runtimes = new RuntimeRegistry().register(new OpenClawAdapter({
   url: process.env.OPENCLAW_GATEWAY_URL || "ws://127.0.0.1:18789",
   token: process.env.OPENCLAW_GATEWAY_TOKEN || undefined,
   clientId: process.env.OPENCLAW_GATEWAY_CLIENT_ID || "gateway-client",
+  // openclaw-node defaults to $HOME, which is unset on native Windows.
+  deviceIdentityPath: process.env.OPENCLAW_DEVICE_IDENTITY_PATH
+    || resolve(os.homedir(), ".openclaw", "device-identity.json"),
 }));
 runtimes.require(defaultRuntimeId);
 
@@ -60,6 +63,7 @@ let healthTimer: NodeJS.Timeout | null = null;
 let healthRefreshInFlight = false;
 const active = new Map<string, ActiveTask>();
 const seen = new Set<string>();
+
 
 function messageId(prefix: string): string {
   return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
