@@ -14,6 +14,12 @@
     "dev:web": "npm run dev -w @remote-oc/web",
     "start:bff": "npm run start -w @remote-oc/bff",
     "start:client": "npm run start -w @remote-oc/client",
+    "pair": "npm run pair -w @remote-oc/client --",
+    "install:client": "powershell -ExecutionPolicy Bypass -File ./install-remote-client.ps1",
+    "uninstall:client": "powershell -ExecutionPolicy Bypass -File ./install-remote-client.ps1 -Uninstall",
+    "package:windows": "powershell -ExecutionPolicy Bypass -File ./scripts/package-windows.ps1",
+    "start:public": "powershell -ExecutionPolicy Bypass -File ./start-public-stack.ps1",
+    "stop:public": "powershell -ExecutionPolicy Bypass -File ./stop-public-stack.ps1",
     "test": "vitest run",
     "typecheck": "npm run build -w @remote-oc/protocol && npm run typecheck -w @remote-oc/client && npm run typecheck -w @remote-oc/web && npm run typecheck -w @remote-oc/bff"
   },

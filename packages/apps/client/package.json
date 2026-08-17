@@ -6,8 +6,12 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "push": "tsx src/push.ts",
+    "pair": "tsx src/pair.ts",
+    "verify-install": "tsx src/verify-install.ts",
+    "configure-device": "tsx src/configure-device.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
+    "verify-install:built": "node dist/verify-install.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

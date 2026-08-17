@@ -138,6 +138,29 @@ jianmu.start();
 
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
+app.post("/api/pairing", async (req, res, next) => {
+  try {
+    const nodeName = typeof req.body?.nodeName === "string" && req.body.nodeName.trim() ? req.body.nodeName.trim() : "Remote Client";
+    const pairing = await jianmu.createPairingSession(nodeName);
+    res.status(201).json({ ...pairing, installCommand: `npm run pair -- --code ${pairing.code} --name \"${nodeName.replace(/\"/g, "\\\"")}\"` });
+  } catch (error) { next(error); }
+});
+
+app.get("/api/nodes", async (_req, res, next) => {
+  try { res.json(await jianmu.nodes()); } catch (error) { next(error); }
+});
+
+app.post("/api/nodes/:nodeId/revoke", async (req, res, next) => {
+  try { res.json(await jianmu.revokeNode(req.params.nodeId)); } catch (error) { next(error); }
+});
+
+app.post("/api/nodes/:nodeId/rename", async (req, res, next) => {
+  try {
+    if (typeof req.body?.nodeName !== "string" || !req.body.nodeName.trim()) { res.status(400).json({ error: "nodeName is required" }); return; }
+    res.json(await jianmu.renameNode(req.params.nodeId, req.body.nodeName.trim()));
+  } catch (error) { next(error); }
+});
+
 app.get("/api/clients", async (_req, res, next) => {
   try {
     const clients = (await jianmu.sessions())

@@ -7,6 +7,7 @@ export interface OpenClawAdapterOptions {
   url: string;
   token?: string;
   clientId?: string;
+  deviceIdentityPath?: string;
 }
 
 export class OpenClawAdapter implements AgentRuntime {
@@ -24,6 +25,7 @@ export class OpenClawAdapter implements AgentRuntime {
       token: options.token,
       autoReconnect: true,
       clientId: options.clientId || "gateway-client",
+      deviceIdentityPath: options.deviceIdentityPath,
     });
     this.client.on("disconnected", () => { this.connected = false; });
     this.client.on("error", (error) => console.error("OpenClaw runtime error", error));

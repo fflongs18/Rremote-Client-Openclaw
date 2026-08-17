@@ -31,6 +31,9 @@ export interface JianmuSession {
   runtimes?: RuntimeDescriptor[];
   [key: string]: unknown;
 }
+export interface JianmuNode {
+  node_id: string; node_name: string; session_name: string; online: boolean; platform?: string; client_version?: string; runtimes?: RuntimeDescriptor[]; token_status: string;
+}
 
 export class JianmuClient extends EventEmitter {
   private ws: WebSocket | null = null;
@@ -121,6 +124,12 @@ export class JianmuClient extends EventEmitter {
   sessions(): Promise<JianmuSession[]> {
     return this.request<JianmuSession[]>("/sessions");
   }
+  nodes(): Promise<JianmuNode[]> { return this.request<JianmuNode[]>("/nodes"); }
+  createPairingSession(nodeName: string): Promise<{ id: string; code: string; expiresAt: number }> {
+    return this.request("/pairing-sessions", { method: "POST", body: JSON.stringify({ nodeName }) });
+  }
+  revokeNode(nodeId: string): Promise<unknown> { return this.request(`/nodes/${encodeURIComponent(nodeId)}/revoke`, { method: "POST", body: "{}" }); }
+  renameNode(nodeId: string, nodeName: string): Promise<unknown> { return this.request(`/nodes/${encodeURIComponent(nodeId)}/rename`, { method: "POST", body: JSON.stringify({ nodeName }) }); }
 
   createTask(input: {
     to: string;

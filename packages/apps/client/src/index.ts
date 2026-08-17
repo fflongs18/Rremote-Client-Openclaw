@@ -13,6 +13,7 @@ import {
 } from "@remote-oc/protocol";
 import { OpenClawAdapter } from "./adapters/openclaw.js";
 import { RuntimeRegistry } from "./runtime/registry.js";
+import { loadDeviceConfig } from "./device-config.js";
 
 dotenv.config({ path: resolve(dirname(fileURLToPath(import.meta.url)), "../../../../.env") });
 
@@ -34,21 +35,22 @@ interface ActiveTask {
   cancelled: boolean;
 }
 
-const clientId = process.env.REMOTE_CLIENT_ID || `remote-oc-${os.hostname().toLowerCase()}`;
+const deviceConfig = loadDeviceConfig();
+const clientId = process.env.REMOTE_CLIENT_ID || deviceConfig?.nodeId || `remote-oc-${os.hostname().toLowerCase()}`;
 if (!clientId.startsWith(REMOTE_CLIENT_PREFIX) || clientId.startsWith("openclaw")) {
   throw new Error(`REMOTE_CLIENT_ID must start with ${REMOTE_CLIENT_PREFIX} and must not start with openclaw`);
 }
 
-const hubWsUrl = process.env.JIANMU_HUB_URL || "ws://127.0.0.1:3179";
-const hubHttpUrl = process.env.JIANMU_HTTP_URL || hubWsUrl.replace(/^ws/, "http");
-const hubToken = process.env.JIANMU_AUTH_TOKEN || "";
+const hubWsUrl = process.env.JIANMU_PUBLIC_WS_URL || process.env.JIANMU_HUB_URL || deviceConfig?.hubWsUrl || "ws://127.0.0.1:3179";
+const hubHttpUrl = process.env.JIANMU_PUBLIC_HTTP_URL || process.env.JIANMU_HTTP_URL || deviceConfig?.hubHttpUrl || hubWsUrl.replace(/^ws/, "http");
+const hubToken = process.env.JIANMU_AUTH_TOKEN || deviceConfig?.nodeToken || "";
 const controlId = process.env.WEB_CONTROL_ID || "web-control";
 const defaultRuntimeId = (process.env.AGENT_RUNTIME || "openclaw").trim().toLowerCase();
 const healthIntervalMs = Math.max(5_000, Number(process.env.RUNTIME_HEALTH_INTERVAL_MS) || 15_000);
 const runtimeConnectTimeoutMs = Math.max(1_000, Number(process.env.RUNTIME_CONNECT_TIMEOUT_MS) || 5_000);
 const runtimes = new RuntimeRegistry().register(new OpenClawAdapter({
-  url: process.env.OPENCLAW_GATEWAY_URL || "ws://127.0.0.1:18789",
-  token: process.env.OPENCLAW_GATEWAY_TOKEN || undefined,
+  url: process.env.OPENCLAW_GATEWAY_URL || deviceConfig?.openClaw.url || "ws://127.0.0.1:18789",
+  token: process.env.OPENCLAW_GATEWAY_TOKEN || deviceConfig?.openClaw.token || undefined,
   clientId: process.env.OPENCLAW_GATEWAY_CLIENT_ID || "gateway-client",
   // openclaw-node defaults to $HOME, which is unset on native Windows.
   deviceIdentityPath: process.env.OPENCLAW_DEVICE_IDENTITY_PATH
@@ -112,7 +114,10 @@ async function registerClient(): Promise<void> {
     pid: process.pid,
     cwd: process.cwd(),
     runtime: "remote-agent-host",
-    label: process.env.REMOTE_CLIENT_LABEL || os.hostname(),
+    nodeId: clientId,
+    label: deviceConfig?.nodeName || process.env.REMOTE_CLIENT_LABEL || os.hostname(),
+    platform: process.platform,
+    clientVersion: process.env.npm_package_version || "0.2.0",
     runtimes: runtimeDescriptions,
   });
 }
@@ -254,6 +259,11 @@ function connectHub(): void {
   socket.on("error", (error) => console.error("Jianmu WebSocket error", error));
   socket.on("close", (code, reason) => {
     console.warn(`Jianmu disconnected (${code} ${reason.toString()})`);
+    if (code === 1008 || code === 4001 || /unauthorized|revoked/i.test(reason.toString())) {
+      stopping = true;
+      console.error("Device token is invalid or revoked. Run the pairing command again.");
+      return;
+    }
     if (!stopping && !reconnectTimer) {
       reconnectTimer = setTimeout(() => {
         reconnectTimer = null;
