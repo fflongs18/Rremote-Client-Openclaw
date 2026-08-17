@@ -4,6 +4,7 @@ import {
   type JianmuMessage,
   type RemoteTaskEvent,
   type AgentPushMessage,
+  type RuntimeDescriptor,
   isAgentPushMessage,
   isRemoteTaskEvent,
   parseJson,
@@ -27,6 +28,7 @@ export interface JianmuSession {
   connectedAt?: number;
   runtime?: string;
   label?: string;
+  runtimes?: RuntimeDescriptor[];
   [key: string]: unknown;
 }
 
@@ -123,20 +125,24 @@ export class JianmuClient extends EventEmitter {
   createTask(input: {
     to: string;
     message: string;
+    runtime?: string;
     agentId?: string;
     sessionKey?: string;
+    metadata?: Record<string, unknown>;
   }): Promise<{ ok: true; taskId: string; online: boolean; buffered: boolean }> {
     return this.request("/task", {
       method: "POST",
       body: JSON.stringify({
         from: this.sessionName,
         to: input.to,
-        title: "OpenClaw chat",
+        title: `${input.runtime || "openclaw"} chat`,
         description: input.message,
         payload: {
           message: input.message,
+          ...(input.runtime ? { runtime: input.runtime } : {}),
           ...(input.agentId ? { agentId: input.agentId } : {}),
           ...(input.sessionKey ? { sessionKey: input.sessionKey } : {}),
+          ...(input.metadata ? { metadata: input.metadata } : {}),
         },
       }),
     });

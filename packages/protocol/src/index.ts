@@ -21,11 +21,22 @@ export type TaskStatus =
   | "failed"
   | "cancelled";
 
+export interface RuntimeDescriptor {
+  id: string;
+  label: string;
+  capabilities: string[];
+  ready?: boolean;
+  detail?: string;
+  checkedAt?: number;
+}
+
 export interface RemoteTaskPayload {
   message: string;
+  runtime?: string;
   agentId?: string;
   sessionKey?: string;
   clientMessageId?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface RemoteTaskEvent {
@@ -34,6 +45,7 @@ export interface RemoteTaskEvent {
   sequence: number;
   event: TaskEventName;
   runId?: string;
+  runtime?: string;
   sessionKey?: string;
   data?: { text?: string; [key: string]: unknown };
   timestamp: number;

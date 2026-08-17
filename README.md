@@ -67,6 +67,7 @@ JIANMU_HUB_URL=ws://WINDOWS_LAN_IP:3179
 JIANMU_AUTH_TOKEN=replace-with-the-same-secret
 REMOTE_CLIENT_ID=remote-oc-macbook
 REMOTE_CLIENT_LABEL=My MacBook
+AGENT_RUNTIME=openclaw
 OPENCLAW_GATEWAY_URL=ws://127.0.0.1:18789
 OPENCLAW_GATEWAY_TOKEN=
 WEB_CONTROL_ID=web-control
@@ -115,3 +116,18 @@ PUSH_SESSION_KEY=rc_mac-mini_项目分析_20260813_1124_a7f2
 ```
 
 `PUSH_SESSION_KEY` 设置后，消息会自动追加到主控对应会话；不设置则进入主控右上角的“远端推送”通知面板。命令可以由 macOS `launchd`、Windows 任务计划或 cron 定时调用。当前第一版支持文本通知，文件产物仍建议先上传到可访问的文件服务，再推送下载地址。
+
+## Runtime 插件
+
+Remote Client 通过 `AgentRuntime` 接口加载执行引擎。当前内置 `OpenClawAdapter`，任务未指定 `runtime` 时使用 `AGENT_RUNTIME`（默认 `openclaw`）。Client 注册到 Jianmu 时会上报所有 Runtime 及其 capabilities，页面在新对话发送前可选择执行插件，发送后锁定该 Runtime。
+
+Client 同时上报每个 Runtime 的 `ready` 状态。页面只允许向已就绪的 Runtime 发送消息；旧版 Client 未上报状态时保持兼容。BFF 默认等待远端 15 秒确认接收，任务接收后 120 秒没有任何进度则标记失败并尝试取消，分别可通过 `TASK_ACCEPT_TIMEOUT_MS` 和 `TASK_IDLE_TIMEOUT_MS` 调整。Client 的健康状态默认每 15 秒刷新并尝试恢复连接，可通过 `RUNTIME_HEALTH_INTERVAL_MS` 调整；单次连接等待默认 5 秒，可通过 `RUNTIME_CONNECT_TIMEOUT_MS` 调整。
+
+新增 Hermes 等 Runtime 时：
+
+1. 在 `packages/apps/client/src/adapters/` 实现 `AgentRuntime`。
+2. 在 `packages/apps/client/src/index.ts` 的 `RuntimeRegistry` 注册实例。
+3. 将 Hermes 原生流事件转换为 `RuntimeEvent`，不要让 Hermes SDK 类型进入 Client 主循环、BFF 或协议包。
+4. 为连接、流式文本、完成、失败和取消添加 Adapter 测试。
+
+通用接口位于 `packages/apps/client/src/runtime/types.ts`，注册表位于 `packages/apps/client/src/runtime/registry.ts`。

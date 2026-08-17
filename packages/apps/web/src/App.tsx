@@ -8,6 +8,16 @@ interface Client {
   runtime: string;
   connectedAt: number | null;
   online: boolean;
+  runtimes?: RuntimeInfo[];
+}
+
+interface RuntimeInfo {
+  id: string;
+  label: string;
+  capabilities: string[];
+  ready?: boolean;
+  detail?: string;
+  checkedAt?: number;
 }
 
 interface TaskEvent {
@@ -32,6 +42,7 @@ interface Conversation {
   clientId: string;
   title: string;
   sessionKey: string;
+  runtime: string;
   agentId: string;
   status: Status;
   turns: Turn[];
@@ -61,13 +72,14 @@ function uid(): string {
   return crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-function createConversation(clientId: string): Conversation {
+function createConversation(clientId: string, runtime = "openclaw"): Conversation {
   const id = uid();
   return {
     id,
     clientId,
     title: "新对话",
     sessionKey: "",
+    runtime,
     agentId: "main",
     status: "idle",
     turns: [],
@@ -85,23 +97,25 @@ function sessionSlug(value: string, fallback: string): string {
   return ascii || fallback;
 }
 
-function createReadableSessionKey(client: Client | undefined, prompt: string): string {
+function createReadableSessionKey(client: Client | undefined, runtime: string, prompt: string): string {
   const node = sessionSlug(clientDisplayName(client), "agent");
+  const runtimeSlug = sessionSlug(runtime, "runtime");
   const topic = sessionSlug(prompt, "chat");
   const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 12);
   const shortId = uid().replace(/-/g, "").slice(0, 6).toLowerCase();
-  return `rc_${node}_${topic}_${stamp}_${shortId}`;
+  return `rc_${node}_${runtimeSlug}_${topic}_${stamp}_${shortId}`;
 }
 
 function loadConversations(): Conversation[] {
   try {
     const value = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]") as Conversation[];
     if (!Array.isArray(value)) return [];
-    return value.map((conversation) => (
-      conversation.turns.length === 0 && /^remote:[^:]+:web:[0-9a-f-]+$/i.test(conversation.sessionKey)
-        ? { ...conversation, sessionKey: "" }
-        : conversation
-    ));
+    return value.map((conversation) => {
+      const migrated = { ...conversation, runtime: conversation.runtime || "openclaw" };
+      return migrated.turns.length === 0 && /^remote:[^:]+:web:[0-9a-f-]+$/i.test(migrated.sessionKey)
+        ? { ...migrated, sessionKey: "" }
+        : migrated;
+    });
   } catch {
     return [];
   }
@@ -160,6 +174,23 @@ function clientDisplayName(client: Client | undefined): string {
   return host.length > 24 ? `${host.slice(0, 21)}...` : host;
 }
 
+function runtimeOptions(client: Client | undefined): NonNullable<Client["runtimes"]> {
+  return client?.runtimes?.length
+    ? client.runtimes
+    : [{ id: "openclaw", label: "OpenClaw", capabilities: [] }];
+}
+
+function defaultRuntime(client: Client | undefined): string {
+  const options = runtimeOptions(client);
+  return options.find((runtime) => runtime.ready === true)?.id
+    || options.find((runtime) => runtime.ready !== false)?.id
+    || options[0].id;
+}
+
+function clientReady(client: Client): boolean {
+  return client.online && (!client.runtimes?.length || client.runtimes.some((runtime) => runtime.ready !== false));
+}
+
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     ...init,
@@ -192,6 +223,13 @@ export default function App() {
   );
   const activeClient = clients.find((client) => client.id === active?.clientId);
   const activeClientName = clientDisplayName(activeClient);
+  const activeRuntimeOptions = runtimeOptions(activeClient);
+  const activeRuntime = activeRuntimeOptions.find((runtime) => runtime.id === active?.runtime);
+  const activeRuntimeLabel = activeRuntime?.label || active?.runtime || "OpenClaw";
+  const activeRuntimeReady = Boolean(activeClient?.online) && activeRuntime?.ready !== false;
+  const activeRuntimeDetail = activeRuntime?.ready === false
+    ? activeRuntime.detail || `${activeRuntime.label} 尚未连接`
+    : "";
   const currentTurn = active?.turns.at(-1);
   const currentTaskId = currentTurn?.taskId || "";
   const busy = Boolean(active && active.status !== "idle" && !terminal.has(active.status));
@@ -214,7 +252,8 @@ export default function App() {
   }
 
   function newConversation(clientId: string): void {
-    const next = createConversation(clientId);
+    const client = clients.find((item) => item.id === clientId);
+    const next = createConversation(clientId, defaultRuntime(client));
     setEmptyClientIds((current) => {
       const updated = new Set(current);
       updated.delete(clientId);
@@ -271,7 +310,7 @@ export default function App() {
         setConversations((current) => {
           const additions = next
             .filter((client) => !emptyClientIds.has(client.id) && !knownClientIds.current.has(client.id) && !current.some((conversation) => conversation.clientId === client.id))
-            .map((client) => createConversation(client.id));
+            .map((client) => createConversation(client.id, defaultRuntime(client)));
           knownClientIds.current = new Set([...knownClientIds.current, ...next.map((client) => client.id)]);
           return additions.length ? [...current, ...additions] : current;
         });
@@ -322,6 +361,7 @@ export default function App() {
         if (stopped) return;
         mergeEvents(result.events);
         updateConversation(conversationId, (conversation) => ({ ...conversation, status: result.task.status }));
+        if (terminal.has(result.task.status)) source.close();
       })
       .catch((cause) => {
         if (stopped) return;
@@ -344,6 +384,7 @@ export default function App() {
       const nextStatus = statusFromEvent(taskEvent.event);
       if (nextStatus) {
         updateConversation(conversationId, (conversation) => ({ ...conversation, status: nextStatus, updatedAt: Date.now() }));
+        if (terminal.has(nextStatus)) source.close();
       }
     });
     return () => {
@@ -375,12 +416,12 @@ export default function App() {
   async function submit(event: FormEvent) {
     event.preventDefault();
     const prompt = message.trim();
-    if (!active || !activeClient?.online || !prompt || busy) return;
+    if (!active || !activeRuntimeReady || !prompt || busy) return;
     const conversationId = active.id;
     const turnId = uid();
     const now = Date.now();
     const conversationTitle = active.turns.length === 0 ? prompt.slice(0, 32) : active.title;
-    const sessionKey = active.sessionKey || createReadableSessionKey(activeClient, prompt);
+    const sessionKey = active.sessionKey || createReadableSessionKey(activeClient, active.runtime, prompt);
     setError("");
     setMessage("");
     updateConversation(conversationId, (conversation) => ({
@@ -397,6 +438,7 @@ export default function App() {
         body: JSON.stringify({
           clientId: active.clientId,
           message: prompt,
+          runtime: active.runtime,
           agentId: active.agentId,
           sessionKey,
         }),
@@ -406,8 +448,16 @@ export default function App() {
         turns: conversation.turns.map((turn) => turn.id === turnId ? { ...turn, taskId: result.taskId } : turn),
       }));
     } catch (cause) {
-      updateConversation(conversationId, (conversation) => ({ ...conversation, status: "failed" }));
-      setError(cause instanceof Error ? cause.message : String(cause));
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      updateConversation(conversationId, (conversation) => ({
+        ...conversation,
+        status: "failed",
+        turns: conversation.turns.map((turn) => turn.id === turnId ? {
+          ...turn,
+          events: [{ taskId: `local:${turnId}`, sequence: 1, event: "failed", data: { text: detail }, timestamp: Date.now() }],
+        } : turn),
+      }));
+      setError(detail);
     }
   }
 
@@ -441,11 +491,12 @@ export default function App() {
               .filter((conversation) => conversation.clientId === client.id)
               .sort((a, b) => b.updatedAt - a.updatedAt);
             const expanded = expandedClients.has(client.id);
+            const ready = clientReady(client);
             return (
               <section className="agent-group" key={client.id}>
                 <button className="agent-row" type="button" onClick={() => selectClient(client.id)}>
                   <span className="agent-avatar">{clientDisplayName(client).trim().slice(0, 1).toUpperCase()}</span>
-                  <span className="agent-copy"><strong title={client.name}>{clientDisplayName(client)}</strong><small><i className={client.online ? "online" : ""} />{client.online ? "在线" : "离线"}</small></span>
+                  <span className="agent-copy"><strong title={client.name}>{clientDisplayName(client)}</strong><small><i className={ready ? "online" : ""} />{ready ? "可用" : client.online ? "Runtime 未就绪" : "离线"}</small></span>
                   <span className={`chevron ${expanded ? "expanded" : ""}`} aria-hidden="true">›</span>
                 </button>
                 {expanded && (
@@ -489,7 +540,7 @@ export default function App() {
             <header className="chat-header">
               <div className="chat-identity">
                 <span className="header-avatar">{activeClientName.trim().slice(0, 1).toUpperCase() || "?"}</span>
-                <div><h1>{active.title}</h1><p title={activeClient?.name}>{activeClientName} · Agent {active.agentId}</p></div>
+                <div><h1>{active.title}</h1><p title={activeClient?.name}>{activeClientName} · {active.runtime} · Agent {active.agentId}</p></div>
               </div>
               <div className="header-actions">
                 <button className={`notification-button ${pushes.length ? "has-pushes" : ""}`} type="button" onClick={() => setShowPushes((value) => !value)} title="远端主动推送">铃声 {pushes.length ? pushes.length : ""}</button>
@@ -503,7 +554,16 @@ export default function App() {
               {pushes.length === 0 ? <p>暂无主动推送</p> : pushes.map((push) => <button className="push-item" type="button" key={push.messageId} onClick={() => { if (push.sessionKey) setShowPushes(false); }}><span className={`push-level ${push.level || "info"}`} /> <span><strong>{push.title || "远端消息"}</strong><small>{push.text}</small><time>{new Date(push.timestamp).toLocaleString()}</time></span></button>)}
             </div>}
 
-            <div className="session-banner" title="这个标识同时用于远端 OpenClaw 的 sessionKey">
+            <div className="session-banner" title="这个标识同时用于远端智能体的 sessionKey">
+              <span>执行插件</span>
+              <select
+                value={active.runtime}
+                disabled={active.turns.length > 0}
+                onChange={(event) => updateConversation(active.id, (conversation) => ({ ...conversation, runtime: event.target.value }))}
+                aria-label="执行插件"
+              >
+                {activeRuntimeOptions.map((runtime) => <option key={runtime.id} value={runtime.id}>{runtime.label}{runtime.ready === false ? "（未就绪）" : ""}</option>)}
+              </select>
               <span>远端会话</span>
               <code>{active.sessionKey || "发送首条消息后生成可搜索名称"}</code>
             </div>
@@ -513,7 +573,7 @@ export default function App() {
                 <div className="welcome-state">
                   <span className="welcome-mark">OC</span>
                   <h2>开始与 {activeClientName} 对话</h2>
-                  <p>这次对话中的后续消息会保持在同一个 OpenClaw 会话里。</p>
+                  <p>这次对话中的后续消息会保持在同一个 {activeRuntimeLabel} 会话里。</p>
                 </div>
               ) : active.turns.map((turn) => {
                 const output = outputForTurn(turn);
@@ -548,13 +608,13 @@ export default function App() {
                   value={message}
                   onChange={(event) => setMessage(event.target.value)}
                   onKeyDown={onComposerKeyDown}
-                  placeholder={activeClient?.online ? "发送消息..." : "该 Agent 当前不在线"}
+                  placeholder={!activeClient?.online ? "该 Agent 当前不在线" : activeRuntimeDetail || "发送消息..."}
                   rows={1}
-                  disabled={!activeClient?.online}
+                  disabled={!activeRuntimeReady}
                 />
-                <button className="send-button" disabled={!activeClient?.online || !message.trim() || busy} title="发送消息" aria-label="发送消息">↑</button>
+                <button className="send-button" disabled={!activeRuntimeReady || !message.trim() || busy} title={activeRuntimeDetail || "发送消息"} aria-label="发送消息">↑</button>
               </form>
-              <div className="composer-meta"><span>Enter 发送，Shift + Enter 换行</span><span className={`node-state ${activeClient?.online ? "online" : ""}`}>{activeClient?.online ? "Agent 在线" : "Agent 离线"}</span></div>
+              <div className="composer-meta"><span>{activeRuntimeDetail || "Enter 发送，Shift + Enter 换行"}</span><span className={`node-state ${activeRuntimeReady ? "online" : ""}`}>{activeRuntimeReady ? `${activeRuntimeLabel} 可用` : activeClient?.online ? "Runtime 未就绪" : "Agent 离线"}</span></div>
             </div>
           </>
         ) : (

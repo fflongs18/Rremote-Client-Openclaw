@@ -3,7 +3,6 @@ import os from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
-import { OpenClawClient } from "openclaw-node";
 import {
   REMOTE_CLIENT_PREFIX,
   type JianmuMessage,
@@ -12,8 +11,8 @@ import {
   isCancelCommand,
   parseJson,
 } from "@remote-oc/protocol";
-import { eventFromChunk } from "./events.js";
-import { normalizeChatStream } from "./stream.js";
+import { OpenClawAdapter } from "./adapters/openclaw.js";
+import { RuntimeRegistry } from "./runtime/registry.js";
 
 dotenv.config({ path: resolve(dirname(fileURLToPath(import.meta.url)), "../../../../.env") });
 
@@ -27,6 +26,7 @@ interface JianmuTask {
 
 interface ActiveTask {
   taskId: string;
+  runtimeId: string;
   sessionKey: string;
   runId?: string;
   sequence: number;
@@ -43,34 +43,23 @@ const hubWsUrl = process.env.JIANMU_HUB_URL || "ws://127.0.0.1:3179";
 const hubHttpUrl = process.env.JIANMU_HTTP_URL || hubWsUrl.replace(/^ws/, "http");
 const hubToken = process.env.JIANMU_AUTH_TOKEN || "";
 const controlId = process.env.WEB_CONTROL_ID || "web-control";
-// OpenClaw Gateway requires client.id from a fixed allowlist (e.g. gateway-client).
-// Do not reuse Jianmu REMOTE_CLIENT_ID here.
-const gateway = new OpenClawClient({
+const defaultRuntimeId = (process.env.AGENT_RUNTIME || "openclaw").trim().toLowerCase();
+const healthIntervalMs = Math.max(5_000, Number(process.env.RUNTIME_HEALTH_INTERVAL_MS) || 15_000);
+const runtimeConnectTimeoutMs = Math.max(1_000, Number(process.env.RUNTIME_CONNECT_TIMEOUT_MS) || 5_000);
+const runtimes = new RuntimeRegistry().register(new OpenClawAdapter({
   url: process.env.OPENCLAW_GATEWAY_URL || "ws://127.0.0.1:18789",
   token: process.env.OPENCLAW_GATEWAY_TOKEN || undefined,
-  autoReconnect: true,
   clientId: process.env.OPENCLAW_GATEWAY_CLIENT_ID || "gateway-client",
-});
+}));
+runtimes.require(defaultRuntimeId);
 
 let socket: WebSocket | null = null;
 let stopping = false;
 let reconnectTimer: NodeJS.Timeout | null = null;
-let gatewayConnected = false;
+let healthTimer: NodeJS.Timeout | null = null;
+let healthRefreshInFlight = false;
 const active = new Map<string, ActiveTask>();
 const seen = new Set<string>();
-
-async function connectGateway(): Promise<void> {
-  if (gatewayConnected) return;
-  await gateway.connect();
-  gatewayConnected = true;
-  console.log("Connected to OpenClaw Gateway");
-}
-
-gateway.on("disconnected", () => {
-  gatewayConnected = false;
-  console.warn("OpenClaw Gateway disconnected");
-});
-gateway.on("error", (error) => console.error("OpenClaw Gateway error", error));
 
 function messageId(prefix: string): string {
   return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
@@ -101,11 +90,46 @@ function emit(activeTask: ActiveTask, event: RemoteTaskEvent["event"], data?: { 
     taskId: activeTask.taskId,
     sequence: activeTask.sequence,
     event,
+    runtime: activeTask.runtimeId,
     runId: activeTask.runId,
     sessionKey: activeTask.sessionKey,
     ...(data ? { data } : {}),
     timestamp: Date.now(),
   });
+}
+
+async function registerClient(): Promise<void> {
+  if (socket?.readyState !== WebSocket.OPEN) return;
+  const runtimeDescriptions = await runtimes.describeHealth();
+  if (socket?.readyState !== WebSocket.OPEN) return;
+  send({
+    type: "register",
+    name: clientId,
+    pid: process.pid,
+    cwd: process.cwd(),
+    runtime: "remote-agent-host",
+    label: process.env.REMOTE_CLIENT_LABEL || os.hostname(),
+    runtimes: runtimeDescriptions,
+  });
+}
+
+async function refreshRuntimeHealth(): Promise<void> {
+  if (healthRefreshInFlight) return;
+  healthRefreshInFlight = true;
+  try {
+    await registerClient();
+    await Promise.allSettled(runtimes.all().map(async (runtime) => {
+      const health = await runtime.health();
+      if (health.connected) return;
+      await Promise.race([
+        runtime.connect(),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Runtime connection timed out")), runtimeConnectTimeoutMs)),
+      ]);
+    }));
+    await registerClient();
+  } finally {
+    healthRefreshInFlight = false;
+  }
 }
 
 async function hubRequest<T>(path: string): Promise<T> {
@@ -129,26 +153,35 @@ async function executeTask(taskId: string): Promise<void> {
     const message = payload?.message || task.description;
     if (!message?.trim()) throw new Error("Task has no message");
 
-    const sessionKey = payload?.sessionKey || `remote:${clientId}:${taskId}`;
-    running = { taskId, sessionKey, sequence: 0, terminal: false, cancelled: false };
+    const runtimeId = payload?.runtime?.trim().toLowerCase() || defaultRuntimeId;
+    const runtime = runtimes.require(runtimeId);
+    const sessionKey = payload?.sessionKey || `remote:${clientId}:${runtimeId}:${taskId}`;
+    running = { taskId, runtimeId, sessionKey, sequence: 0, terminal: false, cancelled: false };
     active.set(taskId, running);
+    emit(running, "accepted");
 
-    await connectGateway();
-    const stream = normalizeChatStream(gateway.chat(message, {
+    const stream = runtime.run({
+      message,
       sessionKey,
       agentId: payload?.agentId,
       clientMessageId: payload?.clientMessageId || taskId,
-    }));
+      metadata: payload?.metadata,
+    });
 
-    for await (const chunk of stream) {
+    for await (const runtimeEvent of stream) {
       if (running.cancelled) break;
-      running.runId = chunk.runId;
-      const event = eventFromChunk(chunk, {
+      running.runId = runtimeEvent.runId;
+      const event: RemoteTaskEvent = {
+        version: 1,
         taskId,
         sequence: ++running.sequence,
-        sessionKey,
-      });
-      if (!event) continue;
+        event: runtimeEvent.event,
+        runtime: runtimeId,
+        runId: runtimeEvent.runId,
+        sessionKey: runtimeEvent.sessionKey || sessionKey,
+        data: runtimeEvent.data,
+        timestamp: runtimeEvent.timestamp,
+      };
       if (event.event === "completed" || event.event === "failed") running.terminal = true;
       sendEvent(event);
       if (running.terminal) break;
@@ -160,13 +193,14 @@ async function executeTask(taskId: string): Promise<void> {
     }
   } catch (error) {
     console.error(`Task ${taskId} failed`, error);
-    if (!running) running = { taskId, sessionKey: "", sequence: 0, terminal: false, cancelled: false };
+    if (!running) running = { taskId, runtimeId: defaultRuntimeId, sessionKey: "", sequence: 0, terminal: false, cancelled: false };
     if (!running.cancelled && !running.terminal) {
       emit(running, "failed", { text: error instanceof Error ? error.message : String(error) });
       running.terminal = true;
     }
   } finally {
     active.delete(taskId);
+    void registerClient().catch((error) => console.warn("Failed to refresh runtime health", error));
   }
 }
 
@@ -175,7 +209,7 @@ async function cancelTask(taskId: string): Promise<void> {
   if (!running || running.terminal) return;
   running.cancelled = true;
   try {
-    await gateway.chatAbort(running.sessionKey, running.runId);
+    await runtimes.require(running.runtimeId).cancel({ sessionKey: running.sessionKey, runId: running.runId });
     emit(running, "cancelled");
     running.terminal = true;
   } catch (error) {
@@ -210,14 +244,7 @@ function connectHub(): void {
   socket = new WebSocket(url);
   socket.on("open", () => {
     console.log(`Connected to Jianmu as ${clientId}`);
-    send({
-      type: "register",
-      name: clientId,
-      pid: process.pid,
-      cwd: process.cwd(),
-      runtime: "openclaw-node",
-      label: process.env.REMOTE_CLIENT_LABEL || os.hostname(),
-    });
+    void refreshRuntimeHealth().catch((error) => console.warn("Failed to refresh runtime health", error));
   });
   socket.on("message", onMessage);
   socket.on("error", (error) => console.error("Jianmu WebSocket error", error));
@@ -233,13 +260,19 @@ function connectHub(): void {
 }
 
 connectHub();
-void connectGateway().catch((error) => console.warn("OpenClaw Gateway not ready; will retry on task", error));
+void refreshRuntimeHealth()
+  .then(() => console.log(`Checked ${defaultRuntimeId} runtime`))
+  .catch((error) => console.warn(`${defaultRuntimeId} runtime health check failed`, error));
+healthTimer = setInterval(() => {
+  void refreshRuntimeHealth().catch((error) => console.warn("Failed to refresh runtime health", error));
+}, healthIntervalMs);
 
 async function shutdown(): Promise<void> {
   stopping = true;
   if (reconnectTimer) clearTimeout(reconnectTimer);
+  if (healthTimer) clearInterval(healthTimer);
   socket?.close();
-  await gateway.disconnect();
+  await Promise.allSettled(runtimes.all().map((runtime) => runtime.disconnect()));
   process.exit(0);
 }
 process.on("SIGINT", () => void shutdown());
