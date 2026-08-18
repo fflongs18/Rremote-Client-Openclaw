@@ -2,7 +2,9 @@ import os from "node:os";
 import { pathToFileURL } from "node:url";
 import WebSocket from "ws";
 import { loadDeviceConfig, type DeviceConfig } from "./device-config.js";
+import { HermesAdapter } from "./adapters/hermes.js";
 import { OpenClawAdapter } from "./adapters/openclaw.js";
+import type { AgentRuntime } from "./runtime/types.js";
 
 function arg(name: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -29,7 +31,10 @@ export async function probeHubWss(config: DeviceConfig, timeoutMs = 10_000): Pro
     socket.once("open", () => socket.send(JSON.stringify({
       type: "register", name: config.nodeId, nodeId: config.nodeId, label: config.nodeName,
       runtime: "remote-agent-host", platform: process.platform, clientVersion: "0.1.0",
-      runtimes: [{ id: "openclaw", label: "OpenClaw", ready: false, capabilities: ["chat", "stream", "cancel", "tools"], checkedAt: Date.now() }],
+      runtimes: [
+        { id: "openclaw", label: "OpenClaw", ready: false, capabilities: ["chat", "stream", "cancel", "tools"], checkedAt: Date.now() },
+        { id: "hermes", label: "Hermes", ready: false, capabilities: ["chat", "stream", "cancel", "tools"], checkedAt: Date.now() },
+      ],
     })));
     socket.on("message", (raw) => {
       try { if ((JSON.parse(raw.toString()) as { type?: string }).type === "registered") finish(); } catch { /* ignore unrelated frames */ }
@@ -40,12 +45,26 @@ export async function probeHubWss(config: DeviceConfig, timeoutMs = 10_000): Pro
 }
 
 export async function probeGateway(config: DeviceConfig, timeoutMs = 8_000): Promise<void> {
-  const adapter = new OpenClawAdapter({
-    url: process.env.OPENCLAW_GATEWAY_URL || config.openClaw.url,
-    token: process.env.OPENCLAW_GATEWAY_TOKEN || config.openClaw.token || undefined,
-    clientId: "remote-oc-installer-probe",
-  });
-  try { await withTimeout(adapter.connect(), timeoutMs, "OpenClaw Gateway verification"); }
+  const runtimeId = (process.env.AGENT_RUNTIME || "openclaw").trim().toLowerCase();
+  let adapter: AgentRuntime;
+  if (runtimeId === "hermes") {
+    adapter = new HermesAdapter({
+      baseUrl: process.env.HERMES_API_URL || "http://127.0.0.1:8642",
+      apiKey: process.env.HERMES_API_KEY || undefined,
+      model: process.env.HERMES_MODEL || undefined,
+      provider: process.env.HERMES_PROVIDER || undefined,
+      requestTimeoutMs: Math.min(timeoutMs, Number(process.env.HERMES_REQUEST_TIMEOUT_MS) || 10_000),
+    });
+  } else if (runtimeId === "openclaw") {
+    adapter = new OpenClawAdapter({
+      url: process.env.OPENCLAW_GATEWAY_URL || config.openClaw.url,
+      token: process.env.OPENCLAW_GATEWAY_TOKEN || config.openClaw.token || undefined,
+      clientId: "remote-oc-installer-probe",
+    });
+  } else {
+    throw new Error(`Unsupported AGENT_RUNTIME for gateway verification: ${runtimeId}`);
+  }
+  try { await withTimeout(adapter.connect(), timeoutMs, `${adapter.label} Gateway verification`); }
   finally { await adapter.disconnect().catch(() => undefined); }
 }
 

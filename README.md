@@ -1,12 +1,12 @@
 # OpenClaw Remote Control
 
-在 Windows 本机运行 Web/BFF 和 Jianmu Hub，在 Mac 运行 Remote Client，通过 Mac 本机的 OpenClaw Gateway 执行任务并实时回传结果。
+在 Windows 本机运行 Web/BFF 和 Jianmu Hub，在远端电脑运行 Remote Client，通过本机的 OpenClaw Gateway 或 Hermes Gateway 执行任务并实时回传结果。
 
 ## 架构
 
 ```text
-Browser -> Web/BFF -> xihe-jianmu-ipc Hub -> Mac Remote Client -> OpenClaw Gateway
-             SSE          HTTP + WebSocket          openclaw-node
+Browser -> Web/BFF -> xihe-jianmu-ipc Hub -> Remote Client -> OpenClaw / Hermes
+             SSE          HTTP + WebSocket        WS / HTTP + SSE
 ```
 
 本项目不复制或修改 Jianmu Hub。`D:\project\xihe-jianmu-ipc` 继续作为独立上游项目运行；Remote Client 使用 npm 包 `openclaw-node@0.14.0`。
@@ -119,11 +119,35 @@ PUSH_SESSION_KEY=rc_mac-mini_项目分析_20260813_1124_a7f2
 
 ## Runtime 插件
 
-Remote Client 通过 `AgentRuntime` 接口加载执行引擎。当前内置 `OpenClawAdapter`，任务未指定 `runtime` 时使用 `AGENT_RUNTIME`（默认 `openclaw`）。Client 注册到 Jianmu 时会上报所有 Runtime 及其 capabilities，页面在新对话发送前可选择执行插件，发送后锁定该 Runtime。
+Remote Client 通过 `AgentRuntime` 接口加载执行引擎。当前内置 `OpenClawAdapter` 和 `HermesAdapter`，任务未指定 `runtime` 时使用 `AGENT_RUNTIME`（默认 `openclaw`）。Client 注册到 Jianmu 时会上报所有 Runtime 及其 capabilities，页面在新对话发送前可选择执行插件，发送后锁定该 Runtime。
 
 Client 同时上报每个 Runtime 的 `ready` 状态。页面只允许向已就绪的 Runtime 发送消息；旧版 Client 未上报状态时保持兼容。BFF 默认等待远端 15 秒确认接收，任务接收后 120 秒没有任何进度则标记失败并尝试取消，分别可通过 `TASK_ACCEPT_TIMEOUT_MS` 和 `TASK_IDLE_TIMEOUT_MS` 调整。Client 的健康状态默认每 15 秒刷新并尝试恢复连接，可通过 `RUNTIME_HEALTH_INTERVAL_MS` 调整；单次连接等待默认 5 秒，可通过 `RUNTIME_CONNECT_TIMEOUT_MS` 调整。
 
-新增 Hermes 等 Runtime 时：
+### Hermes
+
+Hermes 使用 Gateway API Server 的 Runs API 接入，Windows 和 macOS 使用相同协议。先在运行 Hermes 的电脑上配置 API Server；`API_SERVER_KEY` 至少需要 16 个字符：
+
+```dotenv
+API_SERVER_ENABLED=true
+API_SERVER_HOST=127.0.0.1
+API_SERVER_PORT=8642
+API_SERVER_KEY=replace-with-a-long-random-secret
+```
+
+启动 Hermes Gateway 后，配置同一台电脑上的 Remote Client：
+
+```dotenv
+AGENT_RUNTIME=hermes
+HERMES_API_URL=http://127.0.0.1:8642
+HERMES_API_KEY=replace-with-the-same-secret
+HERMES_MODEL=
+HERMES_PROVIDER=
+HERMES_REQUEST_TIMEOUT_MS=60000
+```
+
+Client 使用 `POST /v1/runs` 提交任务，通过 `GET /v1/runs/{run_id}/events` 的 SSE 实时接收输出，通过 `GET /v1/runs/{run_id}` 恢复最终状态，并用 `POST /v1/runs/{run_id}/stop` 取消任务。Hermes 会按 `session_id` 延续会话。`HERMES_MODEL` 和 `HERMES_PROVIDER` 留空时使用 Hermes 当前默认路由，也可以设为 Hermes 模型选择器中的可用值。API Server 默认只应监听回环地址；跨主机部署时需要自行提供可信网络和 TLS 保护。
+
+新增其他 Runtime 时：
 
 1. 在 `packages/apps/client/src/adapters/` 实现 `AgentRuntime`。
 2. 在 `packages/apps/client/src/index.ts` 的 `RuntimeRegistry` 注册实例。

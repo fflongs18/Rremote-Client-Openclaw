@@ -11,6 +11,7 @@ import {
   isCancelCommand,
   parseJson,
 } from "@remote-oc/protocol";
+import { HermesAdapter } from "./adapters/hermes.js";
 import { OpenClawAdapter } from "./adapters/openclaw.js";
 import { RuntimeRegistry } from "./runtime/registry.js";
 import { loadDeviceConfig } from "./device-config.js";
@@ -48,14 +49,22 @@ const controlId = process.env.WEB_CONTROL_ID || "web-control";
 const defaultRuntimeId = (process.env.AGENT_RUNTIME || "openclaw").trim().toLowerCase();
 const healthIntervalMs = Math.max(5_000, Number(process.env.RUNTIME_HEALTH_INTERVAL_MS) || 15_000);
 const runtimeConnectTimeoutMs = Math.max(1_000, Number(process.env.RUNTIME_CONNECT_TIMEOUT_MS) || 5_000);
-const runtimes = new RuntimeRegistry().register(new OpenClawAdapter({
-  url: process.env.OPENCLAW_GATEWAY_URL || deviceConfig?.openClaw.url || "ws://127.0.0.1:18789",
-  token: process.env.OPENCLAW_GATEWAY_TOKEN || deviceConfig?.openClaw.token || undefined,
-  clientId: process.env.OPENCLAW_GATEWAY_CLIENT_ID || "gateway-client",
-  // openclaw-node defaults to $HOME, which is unset on native Windows.
-  deviceIdentityPath: process.env.OPENCLAW_DEVICE_IDENTITY_PATH
-    || resolve(os.homedir(), ".openclaw", "device-identity.json"),
-}));
+const runtimes = new RuntimeRegistry()
+  .register(new OpenClawAdapter({
+    url: process.env.OPENCLAW_GATEWAY_URL || deviceConfig?.openClaw.url || "ws://127.0.0.1:18789",
+    token: process.env.OPENCLAW_GATEWAY_TOKEN || deviceConfig?.openClaw.token || undefined,
+    clientId: process.env.OPENCLAW_GATEWAY_CLIENT_ID || "gateway-client",
+    // openclaw-node defaults to $HOME, which is unset on native Windows.
+    deviceIdentityPath: process.env.OPENCLAW_DEVICE_IDENTITY_PATH
+      || resolve(os.homedir(), ".openclaw", "device-identity.json"),
+  }))
+  .register(new HermesAdapter({
+    baseUrl: process.env.HERMES_API_URL || "http://127.0.0.1:8642",
+    apiKey: process.env.HERMES_API_KEY || undefined,
+    model: process.env.HERMES_MODEL || undefined,
+    provider: process.env.HERMES_PROVIDER || undefined,
+    requestTimeoutMs: Number(process.env.HERMES_REQUEST_TIMEOUT_MS) || 60_000,
+  }));
 runtimes.require(defaultRuntimeId);
 
 let socket: WebSocket | null = null;
@@ -191,7 +200,7 @@ async function executeTask(taskId: string): Promise<void> {
         data: runtimeEvent.data,
         timestamp: runtimeEvent.timestamp,
       };
-      if (event.event === "completed" || event.event === "failed") running.terminal = true;
+      if (["completed", "failed", "cancelled"].includes(event.event)) running.terminal = true;
       sendEvent(event);
       if (running.terminal) break;
     }
