@@ -19,6 +19,7 @@
     "uninstall:client": "powershell -ExecutionPolicy Bypass -File ./install-remote-client.ps1 -Uninstall",
     "package:windows": "powershell -ExecutionPolicy Bypass -File ./scripts/package-windows.ps1",
     "start:public": "powershell -ExecutionPolicy Bypass -File ./start-public-stack.ps1",
+    "restart:public": "powershell -ExecutionPolicy Bypass -File ./start-public-stack.ps1",
     "stop:public": "powershell -ExecutionPolicy Bypass -File ./stop-public-stack.ps1",
     "test": "vitest run",
     "typecheck": "npm run build -w @remote-oc/protocol && npm run typecheck -w @remote-oc/client && npm run typecheck -w @remote-oc/web && npm run typecheck -w @remote-oc/bff"

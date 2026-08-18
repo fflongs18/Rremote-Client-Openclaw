@@ -63,6 +63,23 @@ interface AgentPushMessage {
   artifact?: { name: string; url: string; mime?: string; size?: number; expiresAt?: number };
 }
 
+interface NotificationRecord {
+  id: string;
+  conversationId?: string;
+  conversationTitle?: string;
+  clientId?: string;
+  runtime: string;
+  type: "reply" | "completed" | "failed" | "file" | "system";
+  origin: "controller" | "agent";
+  title: string;
+  text: string;
+  prompt?: string;
+  sessionKey?: string;
+  from?: string;
+  artifact?: AgentPushMessage["artifact"];
+  timestamp: number;
+}
+
 const STORAGE_KEY = "remote-oc:conversations:v1";
 const ACTIVE_KEY = "remote-oc:active-conversation";
 const EMPTY_CLIENTS_KEY = "remote-oc:empty-clients:v1";
@@ -191,6 +208,28 @@ function clientReady(client: Client): boolean {
   return client.online && (!client.runtimes?.length || client.runtimes.some((runtime) => runtime.ready !== false));
 }
 
+const notificationTypeLabels: Record<NotificationRecord["type"], string> = {
+  reply: "回复",
+  completed: "完成",
+  failed: "失败",
+  file: "文件",
+  system: "系统",
+};
+
+function notificationLevel(type: NotificationRecord["type"]): "success" | "error" | "warning" | "info" {
+  if (type === "completed") return "success";
+  if (type === "failed") return "error";
+  if (type === "file") return "warning";
+  return "info";
+}
+
+function formatBytes(size?: number): string {
+  if (!size) return "";
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     ...init,
@@ -211,7 +250,10 @@ export default function App() {
   const [connection, setConnection] = useState<"connecting" | "connected" | "reconnecting">("connecting");
   const [error, setError] = useState("");
   const [pushes, setPushes] = useState<AgentPushMessage[]>([]);
-  const [showPushes, setShowPushes] = useState(false);
+  const [showMessageCenter, setShowMessageCenter] = useState(false);
+  const [selectedNotificationId, setSelectedNotificationId] = useState("");
+  const [notificationRuntime, setNotificationRuntime] = useState("all");
+  const [notificationType, setNotificationType] = useState("all");
   const eventSource = useRef<EventSource | null>(null);
   const messageEnd = useRef<HTMLDivElement | null>(null);
   const initializedClients = useRef(false);
@@ -233,6 +275,67 @@ export default function App() {
   const currentTurn = active?.turns.at(-1);
   const currentTaskId = currentTurn?.taskId || "";
   const busy = Boolean(active && active.status !== "idle" && !terminal.has(active.status));
+  const notifications = useMemo<NotificationRecord[]>(() => {
+    const records: NotificationRecord[] = [];
+    for (const conversation of conversations) {
+      for (const turn of conversation.turns) {
+        const lastEvent = [...turn.events].reverse().find((event) => ["completed", "failed", "output"].includes(event.event));
+        if (!lastEvent) continue;
+        const failed = lastEvent.event === "failed";
+        const completed = lastEvent.event === "completed";
+        const text = failed ? errorForTurn(turn) : outputForTurn(turn);
+        records.push({
+          id: `turn:${conversation.id}:${turn.id}`,
+          conversationId: conversation.id,
+          conversationTitle: conversation.title,
+          clientId: conversation.clientId,
+          runtime: conversation.runtime,
+          type: failed ? "failed" : completed ? "completed" : "reply",
+          origin: "controller",
+          title: failed ? "任务执行失败" : completed ? "任务已完成" : "Agent 回复",
+          text: text || turn.prompt,
+          prompt: turn.prompt,
+          sessionKey: conversation.sessionKey,
+          timestamp: lastEvent.timestamp || turn.createdAt,
+        });
+      }
+    }
+    for (const push of pushes) {
+      const conversation = conversations.find((item) => item.sessionKey && item.sessionKey === push.sessionKey);
+      records.push({
+        id: `push:${push.messageId}`,
+        conversationId: conversation?.id,
+        conversationTitle: conversation?.title,
+        clientId: conversation?.clientId,
+        runtime: conversation?.runtime || push.from,
+        type: push.artifact ? "file" : push.level === "error" ? "failed" : "system",
+        origin: "agent",
+        title: push.title || (push.artifact ? "文件已生成" : "平台通知"),
+        text: push.text,
+        sessionKey: push.sessionKey || conversation?.sessionKey,
+        from: push.from,
+        artifact: push.artifact,
+        timestamp: push.timestamp,
+      });
+    }
+    return records.sort((a, b) => b.timestamp - a.timestamp);
+  }, [conversations, pushes]);
+  const filteredNotifications = notifications.filter((item) =>
+    (notificationRuntime === "all" || item.runtime === notificationRuntime)
+    && (notificationType === "all" || item.type === notificationType));
+  const selectedNotification = filteredNotifications.find((item) => item.id === selectedNotificationId)
+    || filteredNotifications[0]
+    || null;
+  const notificationRuntimes = useMemo(() => {
+    const labels = new Map<string, string>();
+    for (const client of clients) {
+      for (const runtime of runtimeOptions(client)) labels.set(runtime.id, runtime.label);
+    }
+    for (const item of notifications) {
+      if (!labels.has(item.runtime)) labels.set(item.runtime, item.runtime);
+    }
+    return [...labels.entries()].map(([id, label]) => ({ id, label }));
+  }, [clients, notifications]);
 
   function updateConversation(id: string, update: (value: Conversation) => Conversation): void {
     setConversations((current) => current.map((item) => item.id === id ? update(item) : item));
@@ -251,9 +354,9 @@ export default function App() {
     if (latest) setActiveId(latest.id);
   }
 
-  function newConversation(clientId: string): void {
+  function newConversation(clientId: string, runtime?: string): void {
     const client = clients.find((item) => item.id === clientId);
-    const next = createConversation(clientId, defaultRuntime(client));
+    const next = createConversation(clientId, runtime || defaultRuntime(client));
     setEmptyClientIds((current) => {
       const updated = new Set(current);
       updated.delete(clientId);
@@ -262,8 +365,43 @@ export default function App() {
     setConversations((current) => [next, ...current]);
     setExpandedClients((current) => new Set(current).add(clientId));
     setActiveId(next.id);
+    setShowMessageCenter(false);
     setMessage("");
     setError("");
+  }
+
+  function selectRuntime(clientId: string, runtimeId: string): void {
+    const existing = conversations
+      .filter((conversation) => conversation.clientId === clientId && conversation.runtime === runtimeId)
+      .sort((a, b) => b.updatedAt - a.updatedAt)[0];
+    if (existing) {
+      setExpandedClients((current) => new Set(current).add(clientId));
+      setActiveId(existing.id);
+      setShowMessageCenter(false);
+      return;
+    }
+    newConversation(clientId, runtimeId);
+  }
+
+  function openNotification(item: NotificationRecord): void {
+    setSelectedNotificationId(item.id);
+    setShowMessageCenter(true);
+  }
+
+  function toggleMessageCenter(): void {
+    setShowMessageCenter((open) => {
+      if (!open) setSelectedNotificationId((current) => current || notifications[0]?.id || "");
+      return !open;
+    });
+  }
+
+  function openNotificationConversation(item: NotificationRecord): void {
+    if (!item.conversationId) return;
+    const conversation = conversations.find((value) => value.id === item.conversationId);
+    if (!conversation) return;
+    setExpandedClients((current) => new Set(current).add(conversation.clientId));
+    setActiveId(conversation.id);
+    setShowMessageCenter(false);
   }
 
   function deleteConversation(conversationId: string): void {
@@ -327,6 +465,16 @@ export default function App() {
     if (activeId || conversations.length === 0) return;
     setActiveId([...conversations].sort((a, b) => b.updatedAt - a.updatedAt)[0].id);
   }, [activeId, conversations]);
+
+  useEffect(() => {
+    if (!clients.length || !activeId) return;
+    const current = conversations.find((conversation) => conversation.id === activeId);
+    if (current && clients.some((client) => client.id === current.clientId)) return;
+    const fallback = conversations
+      .filter((conversation) => clients.some((client) => client.id === conversation.clientId))
+      .sort((a, b) => b.updatedAt - a.updatedAt)[0];
+    setActiveId(fallback?.id || "");
+  }, [activeId, clients, conversations]);
 
   useEffect(() => {
     messageEnd.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -485,45 +633,52 @@ export default function App() {
           <div><strong>OpenClaw</strong><small>Remote workspace</small></div>
         </div>
         <div className="sidebar-heading"><span>远程 Agent</span><span>{clients.filter((client) => client.online).length} 在线</span></div>
+        <section className="sidebar-message-center">
+          <button className={`message-center-toggle ${showMessageCenter ? "active" : ""}`} type="button" onClick={toggleMessageCenter} aria-expanded={showMessageCenter}>
+            <span aria-hidden="true">铃</span><strong>消息中心</strong><b>{notifications.length}</b><i aria-hidden="true">›</i>
+          </button>
+        </section>
         <nav className="agent-list" aria-label="远程 Agent 和对话">
           {clients.map((client) => {
             const clientConversations = conversations
               .filter((conversation) => conversation.clientId === client.id)
               .sort((a, b) => b.updatedAt - a.updatedAt);
+            const runtimeList = runtimeOptions(client);
             const expanded = expandedClients.has(client.id);
             const ready = clientReady(client);
             return (
               <section className="agent-group" key={client.id}>
                 <button className="agent-row" type="button" onClick={() => selectClient(client.id)}>
                   <span className="agent-avatar">{clientDisplayName(client).trim().slice(0, 1).toUpperCase()}</span>
-                  <span className="agent-copy"><strong title={client.name}>{clientDisplayName(client)}</strong><small><i className={ready ? "online" : ""} />{ready ? "可用" : client.online ? "Runtime 未就绪" : "离线"}</small></span>
+                  <span className="agent-copy"><strong title={client.name}>{clientDisplayName(client)}</strong><small><span><i className={ready ? "online" : ""} />{ready ? "在线" : client.online ? "Runtime 未就绪" : "离线"}</span><b>{runtimeList.length} 个平台</b></small></span>
                   <span className={`chevron ${expanded ? "expanded" : ""}`} aria-hidden="true">›</span>
                 </button>
                 {expanded && (
-                  <div className="conversation-list">
-                    {clientConversations.map((conversation) => (
-                      <div className={`conversation-item ${conversation.id === activeId ? "active" : ""}`} key={conversation.id}>
-                        <button
-                          type="button"
-                          className="conversation-row"
-                          onClick={() => setActiveId(conversation.id)}
-                          title={conversation.title}
-                        >
-                          <span aria-hidden="true">▱</span><span>{conversation.title}</span>
-                        </button>
-                        <button
-                          className="delete-chat"
-                          type="button"
-                          onClick={() => deleteConversation(conversation.id)}
-                          disabled={conversation.id === activeId && busy}
-                          title={conversation.id === activeId && busy ? "请先停止当前回复" : "删除对话"}
-                          aria-label={`删除对话 ${conversation.title}`}
-                        >×</button>
-                      </div>
-                    ))}
-                    <button className="new-chat-inline" type="button" onClick={() => newConversation(client.id)}>
-                      <span aria-hidden="true">＋</span> 新对话
-                    </button>
+                  <div className="platform-list">
+                    {runtimeList.map((runtime) => {
+                      const runtimeConversations = clientConversations.filter((conversation) => conversation.runtime === runtime.id);
+                      const runtimeActive = active?.clientId === client.id && active.runtime === runtime.id;
+                      return (
+                        <div className={`platform-group ${runtimeActive ? "active" : ""}`} key={runtime.id}>
+                          <button className="platform-row" type="button" onClick={() => selectRuntime(client.id, runtime.id)}>
+                            <span className="platform-dot" aria-hidden="true" />
+                            <span className="platform-copy"><strong>{runtime.label}</strong><small>{runtimeConversations.length} 个会话</small></span>
+                            <span className={`platform-state ${runtime.ready === false ? "offline" : ""}`}>{runtime.ready === false ? "离线" : "在线"}</span>
+                          </button>
+                          {runtimeActive && <div className="conversation-list">
+                            {runtimeConversations.map((conversation) => (
+                              <div className={`conversation-item ${conversation.id === activeId ? "active" : ""}`} key={conversation.id}>
+                                <button type="button" className="conversation-row" onClick={() => { setActiveId(conversation.id); setShowMessageCenter(false); }} title={conversation.title}>
+                                  <span aria-hidden="true">▱</span><span>{conversation.title}</span>
+                                </button>
+                                <button className="delete-chat" type="button" onClick={() => deleteConversation(conversation.id)} disabled={conversation.id === activeId && busy} title={conversation.id === activeId && busy ? "请先停止当前回复" : "删除对话"} aria-label={`删除对话 ${conversation.title}`}>×</button>
+                              </div>
+                            ))}
+                            <button className="new-chat-inline" type="button" onClick={() => newConversation(client.id, runtime.id)}><span aria-hidden="true">＋</span> 新对话</button>
+                          </div>}
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </section>
@@ -534,8 +689,110 @@ export default function App() {
         <div className="sidebar-footer"><span className={`hub-dot ${connection}`} />控制服务 {connection === "connected" ? "已连接" : "连接中"}</div>
       </aside>
 
-      <section className="chat-workspace">
-        {active ? (
+      <section className={`chat-workspace ${showMessageCenter ? "with-inbox" : ""}`}>
+        {showMessageCenter ? (
+          <>
+            <aside className="inbox-pane">
+              <header className="inbox-header">
+                <strong>消息中心</strong>
+                <span>{filteredNotifications.length} 条</span>
+              </header>
+              <div className="message-center-list">
+                <div className="message-center-counts">
+                  <span>全部 <b>{notifications.length}</b></span>
+                  <span>完成 <b>{notifications.filter((item) => item.type === "completed").length}</b></span>
+                  <span>失败 <b>{notifications.filter((item) => item.type === "failed").length}</b></span>
+                </div>
+                <div className="message-center-filters">
+                  <select aria-label="消息中心按平台筛选" value={notificationRuntime} onChange={(event) => setNotificationRuntime(event.target.value)}>
+                    <option value="all">全部平台</option>
+                    {notificationRuntimes.map((runtime) => <option key={runtime.id} value={runtime.id}>{runtime.label}</option>)}
+                  </select>
+                  <select aria-label="消息中心按类型筛选" value={notificationType} onChange={(event) => setNotificationType(event.target.value)}>
+                    <option value="all">全部类型</option>
+                    <option value="reply">回复</option>
+                    <option value="completed">完成</option>
+                    <option value="failed">失败</option>
+                    <option value="file">文件</option>
+                    <option value="system">系统</option>
+                  </select>
+                </div>
+                <div className="message-center-items">
+                  {filteredNotifications.length === 0
+                    ? <p>暂无符合条件的消息</p>
+                    : filteredNotifications.map((item) => (
+                      <button
+                        className={`message-center-item ${item.origin} ${selectedNotification?.id === item.id ? "selected" : ""}`}
+                        type="button"
+                        key={item.id}
+                        onClick={() => openNotification(item)}
+                        aria-current={selectedNotification?.id === item.id ? "true" : undefined}
+                      >
+                        <span className={`push-level ${notificationLevel(item.type)}`} />
+                        <span>
+                          <strong>{item.title}<em>{item.origin === "controller" ? "主控任务" : "Agent 回传"}</em></strong>
+                          <small>{item.text}</small>
+                          <time>{item.runtime} · {new Date(item.timestamp).toLocaleString()}</time>
+                        </span>
+                      </button>
+                    ))}
+                </div>
+              </div>
+            </aside>
+            <section className="notification-detail" aria-live="polite">
+              {selectedNotification ? (
+                <>
+                  <header className="notification-detail-header">
+                    <div>
+                      <h1>{selectedNotification.title}</h1>
+                      <p>
+                        {selectedNotification.origin === "controller" ? "主控任务" : "Agent 回传"}
+                        · {notificationTypeLabels[selectedNotification.type]}
+                        · {selectedNotification.runtime}
+                      </p>
+                    </div>
+                    {selectedNotification.conversationId && (
+                      <button className="new-chat-button" type="button" onClick={() => openNotificationConversation(selectedNotification)}>打开对话</button>
+                    )}
+                  </header>
+                  <dl className="notification-detail-meta">
+                    <div><dt>时间</dt><dd>{new Date(selectedNotification.timestamp).toLocaleString()}</dd></div>
+                    <div><dt>来源</dt><dd>{selectedNotification.origin === "controller" ? "主控任务" : selectedNotification.from || "Agent 回传"}</dd></div>
+                    {selectedNotification.conversationTitle && <div><dt>对话</dt><dd>{selectedNotification.conversationTitle}</dd></div>}
+                    {selectedNotification.sessionKey && <div><dt>会话</dt><dd><code>{selectedNotification.sessionKey}</code></dd></div>}
+                  </dl>
+                  <div className="notification-detail-body">
+                    {selectedNotification.prompt && selectedNotification.prompt !== selectedNotification.text && (
+                      <section>
+                        <h2>原始指令</h2>
+                        <pre>{selectedNotification.prompt}</pre>
+                      </section>
+                    )}
+                    <section>
+                      <h2>消息内容</h2>
+                      <pre>{selectedNotification.text || "没有文本内容"}</pre>
+                    </section>
+                    {selectedNotification.artifact && (
+                      <section>
+                        <h2>附件</h2>
+                        <a href={selectedNotification.artifact.url} target="_blank" rel="noreferrer">
+                          {selectedNotification.artifact.name}
+                          {selectedNotification.artifact.size ? ` · ${formatBytes(selectedNotification.artifact.size)}` : ""}
+                        </a>
+                      </section>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="welcome-state">
+                  <span className="welcome-mark">铃</span>
+                  <h2>选择一条消息</h2>
+                  <p>点击左侧列表查看完整内容和附件。</p>
+                </div>
+              )}
+            </section>
+          </>
+        ) : active ? (
           <>
             <header className="chat-header">
               <div className="chat-identity">
@@ -543,28 +800,14 @@ export default function App() {
                 <div><h1>{active.title}</h1><p title={activeClient?.name}>{activeClientName} · {active.runtime} · Agent {active.agentId}</p></div>
               </div>
               <div className="header-actions">
-                <button className={`notification-button ${pushes.length ? "has-pushes" : ""}`} type="button" onClick={() => setShowPushes((value) => !value)} title="远端主动推送">铃声 {pushes.length ? pushes.length : ""}</button>
                 {busy && <button className="icon-button danger" type="button" onClick={cancel} title="停止当前回复" aria-label="停止当前回复">■</button>}
-                <button className="new-chat-button" type="button" onClick={() => newConversation(active.clientId)}><span aria-hidden="true">＋</span> 新对话</button>
+                <button className="new-chat-button" type="button" onClick={() => newConversation(active.clientId, active.runtime)}><span aria-hidden="true">＋</span> 新对话</button>
               </div>
             </header>
 
-            {showPushes && <div className="push-popover">
-              <div className="push-popover-title"><strong>远端推送</strong><button type="button" onClick={() => setPushes([])}>清空</button></div>
-              {pushes.length === 0 ? <p>暂无主动推送</p> : pushes.map((push) => <button className="push-item" type="button" key={push.messageId} onClick={() => { if (push.sessionKey) setShowPushes(false); }}><span className={`push-level ${push.level || "info"}`} /> <span><strong>{push.title || "远端消息"}</strong><small>{push.text}</small><time>{new Date(push.timestamp).toLocaleString()}</time></span></button>)}
-            </div>}
-
             <div className="session-banner" title="这个标识同时用于远端智能体的 sessionKey">
-              <span>执行插件</span>
-              <select
-                value={active.runtime}
-                disabled={active.turns.length > 0}
-                onChange={(event) => updateConversation(active.id, (conversation) => ({ ...conversation, runtime: event.target.value }))}
-                aria-label="执行插件"
-              >
-                {activeRuntimeOptions.map((runtime) => <option key={runtime.id} value={runtime.id}>{runtime.label}{runtime.ready === false ? "（未就绪）" : ""}</option>)}
-              </select>
-              <span>远端会话</span>
+              <span className="breadcrumb">{activeClientName} <b>›</b> {activeRuntimeLabel} <b>›</b> {active.title}</span>
+              <span className="session-lock">会话固定于当前平台</span>
               <code>{active.sessionKey || "发送首条消息后生成可搜索名称"}</code>
             </div>
 

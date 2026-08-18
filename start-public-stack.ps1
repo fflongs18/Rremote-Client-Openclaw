@@ -36,6 +36,38 @@ function Assert-PortFree([int]$Port) {
   throw "Port $Port is already in use by PID(s): $($pids -join ', '). Stop that Hub/process (or run .\stop-public-stack.ps1) and retry."
 }
 
+function Wait-PortFree([int]$Port, [int]$Seconds = 12) {
+  $deadline = (Get-Date).AddSeconds($Seconds)
+  do {
+    $listeners = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
+    if ($listeners.Count -eq 0) { return }
+    Start-Sleep -Milliseconds 300
+  } while ((Get-Date) -lt $deadline)
+  Assert-PortFree $Port
+}
+
+function Stop-ExistingPublicStack {
+  $stopScript = Join-Path $PSScriptRoot 'stop-public-stack.ps1'
+  if (-not (Test-Path -LiteralPath $statePath)) { return }
+  Write-Host 'Stopping existing public stack...'
+  & $stopScript -StateDir $StateDir
+  if ($LASTEXITCODE) { throw "Failed to stop existing public stack (exit $LASTEXITCODE)" }
+}
+
+function Build-PublicWeb {
+  $npm = (Get-Command npm.cmd).Source
+  Write-Host 'Building web UI...'
+  Push-Location $PSScriptRoot
+  try {
+    & $npm run build -w @remote-oc/protocol
+    if ($LASTEXITCODE) { throw "Protocol build failed (exit $LASTEXITCODE)" }
+    & $npm run build -w @remote-oc/web
+    if ($LASTEXITCODE) { throw "Web UI build failed (exit $LASTEXITCODE)" }
+  } finally {
+    Pop-Location
+  }
+}
+
 function Find-Ngrok {
   $command = Get-Command ngrok -ErrorAction SilentlyContinue
   if ($command) { return $command.Source }
@@ -46,23 +78,41 @@ function Find-Ngrok {
   throw 'ngrok is not installed'
 }
 
+function Get-OrCreatePersistentAuthToken([string]$Path) {
+  if (Test-Path -LiteralPath $Path) {
+    $existing = (Get-Content -LiteralPath $Path -Raw).Trim()
+    if ($existing.Length -lt 32) {
+      throw "Persistent Hub auth token is invalid: $Path. Restore the original token or explicitly remove this file to rebind all clients."
+    }
+    return $existing
+  }
+
+  $bytes = New-Object byte[] 32
+  $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+  try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
+  $generated = [Convert]::ToBase64String($bytes)
+  $temporary = "$Path.$PID.tmp"
+  try {
+    [IO.File]::WriteAllText($temporary, $generated, [Text.Encoding]::ASCII)
+    if ($IsWindows -or $env:OS -eq 'Windows_NT') {
+      $currentUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+      & icacls.exe $temporary '/inheritance:r' '/grant:r' "${currentUser}:(R,W)" 'SYSTEM:(F)' | Out-Null
+      if ($LASTEXITCODE -ne 0) { throw "Failed to secure Hub auth token ACL" }
+    }
+    Move-Item -LiteralPath $temporary -Destination $Path
+  } finally {
+    Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+  }
+  return $generated
+}
+
 if (-not (Test-Path (Join-Path $HubPath 'hub.mjs'))) { throw "Hub not found: $HubPath" }
 if (-not (Test-Path (Join-Path $PSScriptRoot 'package.json'))) { throw "Remote Client project not found: $PSScriptRoot" }
 
 New-Item -ItemType Directory -Force -Path $StateDir, $logDir | Out-Null
-if (Test-Path $statePath) {
-  $old = Get-Content $statePath -Raw | ConvertFrom-Json
-  $live = @($old.hubPid, $old.ngrokPid, $old.appPid) | Where-Object { $_ -and (Get-Process -Id $_ -ErrorAction SilentlyContinue) }
-  if ($live.Count -gt 0) { throw "Public stack is already running. Run .\stop-public-stack.ps1 first." }
-  Remove-Item -LiteralPath $statePath -Force
-}
+Stop-ExistingPublicStack
 
-if (-not (Test-Path $secretPath)) {
-  $bytes = New-Object byte[] 32
-  [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
-  [Convert]::ToBase64String($bytes) | Set-Content -LiteralPath $secretPath -NoNewline -Encoding ASCII
-}
-$token = (Get-Content $secretPath -Raw).Trim()
+$token = Get-OrCreatePersistentAuthToken $secretPath
 $ngrok = Find-Ngrok
 $defaultDomain = 'carpenter-tyke-similarly.ngrok-free.dev'
 if (-not $PublicHttpUrl) {
@@ -76,8 +126,9 @@ $publicHttp = $publicUri.GetLeftPart([UriPartial]::Authority).TrimEnd('/')
 $publicWs = "wss://$($publicUri.Host)$(if($publicUri.IsDefaultPort){''}else{":$($publicUri.Port)"})"
 $ngrokUrl = $publicUri.Host
 $dbPath = Join-Path $StateDir 'hub.db'
-Assert-PortFree $HubPort
-Assert-PortFree $BffPort
+Wait-PortFree $HubPort
+Wait-PortFree $BffPort
+Build-PublicWeb
 
 $env:IPC_PORT = [string]$HubPort
 $env:IPC_HUB_BIND = '127.0.0.1'
@@ -106,7 +157,7 @@ try {
   $env:JIANMU_HUB_URL = "ws://127.0.0.1:$HubPort"
   $env:JIANMU_AUTH_TOKEN = $token
   $env:BFF_PORT = [string]$BffPort
-  $app = Start-Process -FilePath (Get-Command npm.cmd).Source -ArgumentList @('run', 'dev') -WorkingDirectory $PSScriptRoot -WindowStyle Hidden -PassThru `
+  $app = Start-Process -FilePath (Get-Command npm.cmd).Source -ArgumentList @('run', 'dev:bff') -WorkingDirectory $PSScriptRoot -WindowStyle Hidden -PassThru `
     -RedirectStandardOutput (Join-Path $logDir 'app.out.log') -RedirectStandardError (Join-Path $logDir 'app.err.log')
   Wait-Json "http://127.0.0.1:$BffPort/api/health" @{} 45 | Out-Null
 
