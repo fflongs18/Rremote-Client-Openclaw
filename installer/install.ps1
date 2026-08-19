@@ -12,6 +12,11 @@ param(
   [string]$HermesApiKey = $env:HERMES_API_KEY,
   [string]$HermesModel = $env:HERMES_MODEL,
   [string]$HermesProvider = $env:HERMES_PROVIDER,
+  [ValidateSet('openclaw', 'hermes')][string]$DefaultRuntime = 'openclaw',
+  [switch]$RequireHermes,
+  [switch]$StartHermes,
+  [string]$HermesExecutable = 'hermes',
+  [string]$HermesWorkingDirectory = '',
   [switch]$NoAutostart,
   [switch]$Json
 )
@@ -45,10 +50,41 @@ function Invoke-Node([string]$NodePath, [string]$ScriptPath, [string[]]$Argument
   if ($LASTEXITCODE) { throw "Client command failed: $([IO.Path]::GetFileName($ScriptPath))" }
 }
 
+function Test-HermesCapabilities {
+  $headers = @{}; if ($HermesApiKey) { $headers.Authorization = "Bearer $HermesApiKey" }
+  try {
+    $features = (Invoke-RestMethod -Uri ($HermesUrl.TrimEnd('/') + '/v1/capabilities') -Headers $headers -TimeoutSec 5).features
+    if (-not ($features.run_submission -eq $true -and $features.run_events_sse -eq $true -and $features.run_stop -eq $true)) { throw 'required Runs API capabilities are missing' }
+    return @{ ready = $true; url = $HermesUrl; detail = 'Runs API ready' }
+  } catch {
+    $detail = $_.Exception.Message
+    if ($detail -match '404|Headless backend|web UI disabled') { throw "Hermes is running in UI/headless mode. Start 'hermes gateway'; 'hermes serve' is not compatible ($detail)" }
+    throw "Hermes API is not ready at $HermesUrl. Configure API_SERVER_ENABLED=true and start 'hermes gateway' ($detail)"
+  }
+}
+
+function Ensure-Hermes {
+  if (-not ($RequireHermes -or $StartHermes)) { return @{ ready = $false; required = $false; detail = 'not required' } }
+  if (-not $HermesApiKey -or $HermesApiKey.Length -lt 16) { throw 'HermesApiKey must contain at least 16 characters when Hermes is required' }
+  try { return Test-HermesCapabilities } catch { if (-not $StartHermes) { throw } }
+  $command = Get-Command $HermesExecutable -ErrorAction SilentlyContinue
+  if (-not $command) { throw "Hermes executable was not found: $HermesExecutable" }
+  $old = @{}; foreach ($name in @('API_SERVER_ENABLED','API_SERVER_HOST','API_SERVER_PORT','API_SERVER_KEY')) { $old[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
+  try {
+    $env:API_SERVER_ENABLED = 'true'; $env:API_SERVER_HOST = '127.0.0.1'; $env:API_SERVER_PORT = ([Uri]$HermesUrl).Port.ToString(); $env:API_SERVER_KEY = $HermesApiKey
+    $working = if ($HermesWorkingDirectory) { $HermesWorkingDirectory } else { (Get-Location).Path }
+    Start-Process -FilePath $command.Source -ArgumentList @('gateway') -WorkingDirectory $working -WindowStyle Hidden | Out-Null
+  } finally { foreach ($name in $old.Keys) { [Environment]::SetEnvironmentVariable($name, $old[$name], 'Process') } }
+  $deadline = [DateTime]::UtcNow.AddSeconds(20)
+  do { try { return Test-HermesCapabilities } catch { Start-Sleep -Seconds 1 } } while ([DateTime]::UtcNow -lt $deadline)
+  throw "Hermes gateway did not expose a compatible Runs API at $HermesUrl within 20 seconds"
+}
+
 function Install-Launcher([string]$NodePath, [string]$ClientEntry) {
   $launcher = Join-Path $InstallDir 'run-client.cmd'
   @(
     '@echo off',
+    "set `"AGENT_RUNTIME=$DefaultRuntime`"",
     "set `"REMOTE_CLIENT_CONFIG=$ConfigPath`"",
     "set `"PATH=$InstallDir\runtime;%PATH%`"",
     "`"$NodePath`" `"$ClientEntry`""
@@ -79,6 +115,7 @@ function Wait-ForOnline([string]$NodePath, [string]$VerifyScript, [string]$NodeI
 
 try {
   $manifest = Assert-Release
+  $hermesStatus = Ensure-Hermes
   $nodePath = Join-Path $PackageRoot 'runtime\node.exe'
   $appRoot = Join-Path $PackageRoot 'app'
   $pairScript = Join-Path $appRoot 'client\dist\pair.js'
@@ -109,7 +146,7 @@ try {
   if (-not $NoAutostart) {
     $online = Wait-ForOnline $installedNode $installedVerify $config.nodeId $config.nodeToken $config.hubHttpUrl
   }
-  Result $true 'complete' @{ message = '接入成功'; nodeId = $config.nodeId; nodeName = $config.nodeName; hub = 'connected'; online = (-not $NoAutostart); runtimes = if ($online) { $online.runtimes } else { @() }; launcher = $launcher; packageVersion = $manifest.packageVersion }
+  Result $true 'complete' @{ message = '接入成功'; nodeId = $config.nodeId; nodeName = $config.nodeName; hub = 'connected'; online = (-not $NoAutostart); hermes = $hermesStatus; runtimes = if ($online) { $online.runtimes } else { @() }; launcher = $launcher; packageVersion = $manifest.packageVersion }
 } catch {
   Result $false 'failed' @{ error = $_.Exception.Message }
   exit 1

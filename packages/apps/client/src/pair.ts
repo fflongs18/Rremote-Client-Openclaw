@@ -31,13 +31,14 @@ export async function pairDevice(options: PairOptions): Promise<DeviceConfig> {
   const result = JSON.parse(body) as Record<string, unknown>;
   if (typeof result.nodeId !== "string" || typeof result.nodeToken !== "string") throw new Error("Pairing response did not contain a device identity");
   const returnedHttp = typeof result.hubHttpUrl === "string" && result.hubHttpUrl ? deriveHubUrls(result.hubHttpUrl) : requested;
+  const returnedWs = typeof result.hubWsUrl === "string" ? result.hubWsUrl.replace(/\/$/, "") : "";
   const config: DeviceConfig = {
     version: 1,
     nodeId: result.nodeId,
     nodeToken: result.nodeToken,
     nodeName: typeof result.nodeName === "string" ? result.nodeName : options.name,
     hubHttpUrl: returnedHttp.hubHttpUrl,
-    hubWsUrl: typeof result.hubWsUrl === "string" && result.hubWsUrl.startsWith("wss://") ? result.hubWsUrl.replace(/\/$/, "") : returnedHttp.hubWsUrl,
+    hubWsUrl: returnedWs.startsWith("wss://") || returnedWs.startsWith("ws://") ? returnedWs : returnedHttp.hubWsUrl,
     openClaw: { url: options.gatewayUrl || "ws://127.0.0.1:18789", token: options.gatewayToken || null },
     hermes: {
       url: options.hermesUrl || "http://127.0.0.1:8642",

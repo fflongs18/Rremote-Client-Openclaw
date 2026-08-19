@@ -84,11 +84,16 @@ export function saveDeviceConfig(config: DeviceConfig): void {
   }
 }
 
+function isIpv4Address(host: string): boolean {
+  return /^(?:\d{1,3}\.){3}\d{1,3}$/.test(host);
+}
+
 export function deriveHubUrls(input: string): { hubHttpUrl: string; hubWsUrl: string } {
   const raw = input.trim().replace(/\/$/, "");
   const url = new URL(raw);
-  if (url.protocol !== "https:" && !(process.env.REMOTE_OC_ALLOW_INSECURE === "1" && url.protocol === "http:")) {
-    throw new Error("Hub URL must use HTTPS");
+  const allowHttp = process.env.REMOTE_OC_ALLOW_INSECURE === "1" || isIpv4Address(url.hostname);
+  if (url.protocol !== "https:" && !(allowHttp && url.protocol === "http:")) {
+    throw new Error("Hub URL must use HTTPS, or HTTP with an IP address / REMOTE_OC_ALLOW_INSECURE=1");
   }
   if (url.username || url.password || url.search || url.hash) throw new Error("Hub URL must not contain credentials, query, or fragment");
   return { hubHttpUrl: url.toString().replace(/\/$/, ""), hubWsUrl: url.toString().replace(/^http/, "ws").replace(/\/$/, "") };

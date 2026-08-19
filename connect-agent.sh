@@ -137,6 +137,7 @@ pair_device() {
   if [[ -f "$CONFIG_PATH" && -z "$PAIRING_CODE" ]]; then step identity-reused; return; fi
   [[ -n "$HUB_URL" && -n "$PAIRING_CODE" ]] || fail 'HubUrl and one-time PairingCode are required for first installation'
   if [[ "$TEST_MODE" -eq 1 ]]; then write_test_config; return; fi
+  if [[ "$HUB_URL" == http://* ]]; then export REMOTE_OC_ALLOW_INSECURE=1; fi
   REMOTE_CLIENT_CONFIG="$CONFIG_PATH" REMOTE_OC_PAIRING_CODE="$PAIRING_CODE" OPENCLAW_GATEWAY_TOKEN="$OPENCLAW_TOKEN" HERMES_API_KEY="$HERMES_API_KEY" HERMES_MODEL="$HERMES_MODEL" HERMES_PROVIDER="$HERMES_PROVIDER" \
     node "$INSTALL_DIR/packages/apps/client/dist/pair.js" --hub-url "$HUB_URL" --name "$DEVICE_NAME" --gateway-url "$OPENCLAW_URL" --hermes-url "$HERMES_URL"
   step paired

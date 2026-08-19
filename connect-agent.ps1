@@ -141,6 +141,7 @@ function Invoke-Pair([string]$NodePath) {
   if ((Test-Path $ConfigPath) -and -not $PairingCode) { Add-Step 'identity-reused'; return }
   if (-not $HubUrl -or -not $PairingCode) { throw 'HubUrl and one-time PairingCode are required for first installation' }
   if ($TestMode) { Write-TestConfig; return }
+  if ($HubUrl -like 'http://*') { $env:REMOTE_OC_ALLOW_INSECURE = '1' }
   $env:REMOTE_CLIENT_CONFIG = $ConfigPath
   $env:REMOTE_OC_PAIRING_CODE = $PairingCode
   $env:OPENCLAW_GATEWAY_TOKEN = $OpenClawToken

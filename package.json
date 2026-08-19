@@ -21,9 +21,9 @@
     "bootstrap:test": "powershell -ExecutionPolicy Bypass -File ./scripts/test-connect-agent.ps1",
     "package:windows": "powershell -ExecutionPolicy Bypass -File ./scripts/package-windows.ps1",
     "install:release": "powershell -ExecutionPolicy Bypass -File ./installer/bootstrap.ps1",
-    "start:public": "powershell -ExecutionPolicy Bypass -File ./start-public-stack.ps1",
-    "restart:public": "powershell -ExecutionPolicy Bypass -File ./start-public-stack.ps1",
-    "stop:public": "powershell -ExecutionPolicy Bypass -File ./stop-public-stack.ps1",
+    "start:public": "node ./scripts/public-stack.mjs start",
+    "restart:public": "node ./scripts/public-stack.mjs start",
+    "stop:public": "node ./scripts/public-stack.mjs stop",
     "test": "vitest run",
     "typecheck": "npm run build -w @remote-oc/protocol && npm run typecheck -w @remote-oc/client && npm run typecheck -w @remote-oc/web && npm run typecheck -w @remote-oc/bff"
   },

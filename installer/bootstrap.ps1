@@ -11,6 +11,11 @@ param(
   [string]$HermesApiKey = $env:HERMES_API_KEY,
   [string]$HermesModel = $env:HERMES_MODEL,
   [string]$HermesProvider = $env:HERMES_PROVIDER,
+  [ValidateSet('openclaw', 'hermes')][string]$DefaultRuntime = 'openclaw',
+  [switch]$RequireHermes,
+  [switch]$StartHermes,
+  [string]$HermesExecutable = 'hermes',
+  [string]$HermesWorkingDirectory = '',
   [switch]$NoAutostart,
   [switch]$Json
 )
@@ -24,7 +29,11 @@ try {
   $actual = (Get-FileHash $archive -Algorithm SHA256).Hash
   if ($actual -ine $ExpectedSha256) { throw 'Release package SHA256 mismatch' }
   Expand-Archive -LiteralPath $archive -DestinationPath $root
-  $release = Get-ChildItem -LiteralPath $root -Directory | Where-Object { Test-Path (Join-Path $_.FullName 'manifest.json') } | Select-Object -First 1
+  $release = if (Test-Path (Join-Path $root 'manifest.json')) {
+    Get-Item -LiteralPath $root
+  } else {
+    Get-ChildItem -LiteralPath $root -Directory | Where-Object { Test-Path (Join-Path $_.FullName 'manifest.json') } | Select-Object -First 1
+  }
   if (-not $release) { throw 'Downloaded release does not contain manifest.json' }
   $installer = Join-Path $release.FullName 'install.ps1'
   if (-not (Test-Path $installer)) { throw 'Downloaded release installer is missing' }
@@ -39,9 +48,12 @@ try {
   $arguments = @{
     HubUrl = $HubUrl; PairingCode = $PairingCode; DeviceName = $DeviceName; PackageRoot = $release.FullName
     OpenClawUrl = $OpenClawUrl; OpenClawToken = $OpenClawToken; HermesUrl = $HermesUrl; HermesApiKey = $HermesApiKey
-    HermesModel = $HermesModel; HermesProvider = $HermesProvider; Json = $Json
+    HermesModel = $HermesModel; HermesProvider = $HermesProvider; DefaultRuntime = $DefaultRuntime
+    HermesExecutable = $HermesExecutable; HermesWorkingDirectory = $HermesWorkingDirectory; Json = $Json
   }
   if ($NoAutostart) { $arguments.NoAutostart = $true }
+  if ($RequireHermes) { $arguments.RequireHermes = $true }
+  if ($StartHermes) { $arguments.StartHermes = $true }
   & $installer @arguments
   if ($LASTEXITCODE) { exit $LASTEXITCODE }
 } catch {

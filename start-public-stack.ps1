@@ -4,7 +4,8 @@ param(
   [string]$Domain = '',
   [int]$HubPort = 3179,
   [int]$BffPort = 8787,
-  [string]$StateDir = (Join-Path $env:USERPROFILE '.remote-oc\public-stack')
+  [string]$StateDir = (Join-Path $env:USERPROFILE '.remote-oc\public-stack'),
+  [switch]$SkipNgrok
 )
 
 $ErrorActionPreference = 'Stop'
@@ -75,7 +76,16 @@ function Find-Ngrok {
   $candidate = Get-ChildItem -LiteralPath $root -Filter ngrok.exe -Recurse -ErrorAction SilentlyContinue |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
   if ($candidate) { return $candidate.FullName }
-  throw 'ngrok is not installed'
+  return $null
+}
+
+function Get-LanIp {
+  $ip = Get-NetIPConfiguration |
+    Where-Object { $_.IPv4DefaultGateway -ne $null -and $_.NetAdapter.Status -eq 'Up' } |
+    ForEach-Object { $_.IPv4Address.IPAddress } |
+    Select-Object -First 1
+  if (-not $ip) { throw "Unable to detect a LAN IP. Set -PublicHttpUrl http://YOUR_IP:$HubPort" }
+  return $ip
 }
 
 function Get-OrCreatePersistentAuthToken([string]$Path) {
@@ -110,20 +120,34 @@ if (-not (Test-Path (Join-Path $HubPath 'hub.mjs'))) { throw "Hub not found: $Hu
 if (-not (Test-Path (Join-Path $PSScriptRoot 'package.json'))) { throw "Remote Client project not found: $PSScriptRoot" }
 
 New-Item -ItemType Directory -Force -Path $StateDir, $logDir | Out-Null
+if (-not $SkipNgrok -and $env:SKIP_NGROK -eq '1') { $SkipNgrok = $true }
 Stop-ExistingPublicStack
 
 $token = Get-OrCreatePersistentAuthToken $secretPath
 $ngrok = Find-Ngrok
+$useIpMode = [bool]$SkipNgrok -or ($PublicHttpUrl -like 'http://*') -or -not $ngrok
+if (-not $ngrok -and -not $SkipNgrok -and -not $PublicHttpUrl) {
+  Write-Host 'ngrok is not installed; starting in LAN/IP mode.'
+}
+$hubBind = '127.0.0.1'
+$bffHost = '127.0.0.1'
 $defaultDomain = 'carpenter-tyke-similarly.ngrok-free.dev'
-if (-not $PublicHttpUrl) {
+if ($useIpMode) {
+  $hubBind = '0.0.0.0'
+  $bffHost = '0.0.0.0'
+  if (-not $PublicHttpUrl) {
+    $PublicHttpUrl = "http://$(Get-LanIp):$HubPort"
+  }
+} elseif (-not $PublicHttpUrl) {
   $PublicHttpUrl = if ($Domain) { "https://$Domain" } else { "https://$defaultDomain" }
 }
-try { $publicUri = [Uri]$PublicHttpUrl } catch { throw "PublicHttpUrl must be a valid URL, for example https://hub.example.com" }
-if ($publicUri.Scheme -ne 'https' -or -not $publicUri.Host -or $publicUri.AbsolutePath -ne '/') {
-  throw 'PublicHttpUrl must use https and contain only scheme plus hostname'
+try { $publicUri = [Uri]$PublicHttpUrl } catch { throw "PublicHttpUrl must be a valid URL, for example https://hub.example.com or http://192.168.1.10:3179" }
+$isHttpIp = $publicUri.Scheme -eq 'http' -and $publicUri.Host -match '^\d{1,3}(\.\d{1,3}){3}$'
+if (($publicUri.Scheme -ne 'https' -and -not $isHttpIp) -or -not $publicUri.Host -or $publicUri.AbsolutePath -ne '/') {
+  throw 'PublicHttpUrl must be https://host or http://IP:port'
 }
 $publicHttp = $publicUri.GetLeftPart([UriPartial]::Authority).TrimEnd('/')
-$publicWs = "wss://$($publicUri.Host)$(if($publicUri.IsDefaultPort){''}else{":$($publicUri.Port)"})"
+$publicWs = $publicHttp -replace '^http', 'ws'
 $ngrokUrl = $publicUri.Host
 $dbPath = Join-Path $StateDir 'hub.db'
 Wait-PortFree $HubPort
@@ -131,7 +155,7 @@ Wait-PortFree $BffPort
 Build-PublicWeb
 
 $env:IPC_PORT = [string]$HubPort
-$env:IPC_HUB_BIND = '127.0.0.1'
+$env:IPC_HUB_BIND = $hubBind
 $env:IPC_AUTH_TOKEN = $token
 $env:IPC_DB_PATH = $dbPath
 $env:JIANMU_PUBLIC_HTTP_URL = $publicHttp
@@ -140,7 +164,7 @@ $env:JIANMU_PUBLIC_WS_URL = $publicWs
 # Pass env explicitly so Start-Process cannot drop session variables on Windows PowerShell.
 $hubArgs = @(
   "/c",
-  "set `"IPC_PORT=$HubPort`"&& set `"IPC_HUB_BIND=127.0.0.1`"&& set `"IPC_AUTH_TOKEN=$token`"&& set `"IPC_DB_PATH=$dbPath`"&& set `"JIANMU_PUBLIC_HTTP_URL=$publicHttp`"&& set `"JIANMU_PUBLIC_WS_URL=$publicWs`"&& node hub.mjs"
+  "set `"IPC_PORT=$HubPort`"&& set `"IPC_HUB_BIND=$hubBind`"&& set `"IPC_AUTH_TOKEN=$token`"&& set `"IPC_DB_PATH=$dbPath`"&& set `"JIANMU_PUBLIC_HTTP_URL=$publicHttp`"&& set `"JIANMU_PUBLIC_WS_URL=$publicWs`"&& node hub.mjs"
 )
 $hub = Start-Process -FilePath $env:ComSpec -ArgumentList $hubArgs -WorkingDirectory $HubPath -WindowStyle Hidden -PassThru `
   -RedirectStandardOutput (Join-Path $logDir 'hub.out.log') -RedirectStandardError (Join-Path $logDir 'hub.err.log')
@@ -148,15 +172,19 @@ try {
   $auth = @{ Authorization = "Bearer $token" }
   Wait-Json "http://127.0.0.1:$HubPort/health" $auth | Out-Null
 
-  $tunnel = Start-Process -FilePath $ngrok -ArgumentList @('http', "--url=$ngrokUrl", [string]$HubPort) -WindowStyle Hidden -PassThru `
-    -RedirectStandardOutput (Join-Path $logDir 'ngrok.out.log') -RedirectStandardError (Join-Path $logDir 'ngrok.err.log')
-  $publicHeaders = @{ Authorization = "Bearer $token"; 'ngrok-skip-browser-warning' = '1' }
-  Wait-Json "$publicHttp/health" $publicHeaders 45 | Out-Null
+  $tunnel = $null
+  if (-not $useIpMode) {
+    $tunnel = Start-Process -FilePath $ngrok -ArgumentList @('http', "--url=$ngrokUrl", [string]$HubPort) -WindowStyle Hidden -PassThru `
+      -RedirectStandardOutput (Join-Path $logDir 'ngrok.out.log') -RedirectStandardError (Join-Path $logDir 'ngrok.err.log')
+    $publicHeaders = @{ Authorization = "Bearer $token"; 'ngrok-skip-browser-warning' = '1' }
+    Wait-Json "$publicHttp/health" $publicHeaders 45 | Out-Null
+  }
 
   $env:JIANMU_HTTP_URL = "http://127.0.0.1:$HubPort"
   $env:JIANMU_HUB_URL = "ws://127.0.0.1:$HubPort"
   $env:JIANMU_AUTH_TOKEN = $token
   $env:BFF_PORT = [string]$BffPort
+  $env:BFF_HOST = $bffHost
   $app = Start-Process -FilePath (Get-Command npm.cmd).Source -ArgumentList @('run', 'dev:bff') -WorkingDirectory $PSScriptRoot -WindowStyle Hidden -PassThru `
     -RedirectStandardOutput (Join-Path $logDir 'app.out.log') -RedirectStandardError (Join-Path $logDir 'app.err.log')
   Wait-Json "http://127.0.0.1:$BffPort/api/health" @{} 45 | Out-Null
@@ -164,7 +192,7 @@ try {
   [pscustomobject]@{
     startedAt = (Get-Date).ToString('o')
     hubPid = $hub.Id
-    ngrokPid = $tunnel.Id
+    ngrokPid = if ($tunnel) { $tunnel.Id } else { $null }
     appPid = $app.Id
     hubPort = $HubPort
     bffPort = $BffPort
@@ -175,8 +203,14 @@ try {
 
   Write-Host 'Public stack is ready.'
   Write-Host "Web/BFF: http://127.0.0.1:$BffPort"
-  Write-Host "Public HTTP: $publicHttp"
-  Write-Host "Public WSS:  $publicWs"
+  if ($useIpMode) {
+    Write-Host "Web/BFF LAN: http://$($publicUri.Host):$BffPort"
+    Write-Host "Hub HTTP: $publicHttp"
+    Write-Host "Hub WS:   $publicWs"
+  } else {
+    Write-Host "Public HTTP: $publicHttp"
+    Write-Host "Public WSS:  $publicWs"
+  }
   Write-Host "Logs: $logDir"
 } catch {
   foreach ($process in @($app, $tunnel, $hub)) {

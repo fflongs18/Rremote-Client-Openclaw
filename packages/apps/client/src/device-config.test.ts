@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadDeviceConfig } from "./device-config.js";
+import { loadDeviceConfig, deriveHubUrls } from "./device-config.js";
 
 const originalConfig = process.env.REMOTE_CLIENT_CONFIG;
 
@@ -34,6 +34,28 @@ describe("device config migration", () => {
       });
     } finally {
       rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("deriveHubUrls", () => {
+  it("accepts HTTP URLs that use an IPv4 address", () => {
+    expect(deriveHubUrls("http://192.168.1.20:3179")).toEqual({
+      hubHttpUrl: "http://192.168.1.20:3179",
+      hubWsUrl: "ws://192.168.1.20:3179",
+    });
+  });
+
+  it("rejects HTTP hostnames unless explicitly allowed", () => {
+    expect(() => deriveHubUrls("http://hub.example.com")).toThrow(/HTTPS/);
+    process.env.REMOTE_OC_ALLOW_INSECURE = "1";
+    try {
+      expect(deriveHubUrls("http://hub.example.com")).toEqual({
+        hubHttpUrl: "http://hub.example.com",
+        hubWsUrl: "ws://hub.example.com",
+      });
+    } finally {
+      delete process.env.REMOTE_OC_ALLOW_INSECURE;
     }
   });
 });
