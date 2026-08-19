@@ -17,6 +17,8 @@
     "pair": "npm run pair -w @remote-oc/client --",
     "install:client": "powershell -ExecutionPolicy Bypass -File ./install-remote-client.ps1",
     "uninstall:client": "powershell -ExecutionPolicy Bypass -File ./install-remote-client.ps1 -Uninstall",
+    "bootstrap:check": "powershell -ExecutionPolicy Bypass -File ./connect-agent.ps1 -Mode Check -Json",
+    "bootstrap:test": "powershell -ExecutionPolicy Bypass -File ./scripts/test-connect-agent.ps1",
     "package:windows": "powershell -ExecutionPolicy Bypass -File ./scripts/package-windows.ps1",
     "start:public": "powershell -ExecutionPolicy Bypass -File ./start-public-stack.ps1",
     "restart:public": "powershell -ExecutionPolicy Bypass -File ./start-public-stack.ps1",

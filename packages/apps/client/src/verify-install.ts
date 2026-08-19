@@ -45,14 +45,14 @@ export async function probeHubWss(config: DeviceConfig, timeoutMs = 10_000): Pro
 }
 
 export async function probeGateway(config: DeviceConfig, timeoutMs = 8_000): Promise<void> {
-  const runtimeId = (process.env.AGENT_RUNTIME || "openclaw").trim().toLowerCase();
+  const runtimeId = (arg("--runtime") || process.env.AGENT_RUNTIME || "openclaw").trim().toLowerCase();
   let adapter: AgentRuntime;
   if (runtimeId === "hermes") {
     adapter = new HermesAdapter({
-      baseUrl: process.env.HERMES_API_URL || "http://127.0.0.1:8642",
-      apiKey: process.env.HERMES_API_KEY || undefined,
-      model: process.env.HERMES_MODEL || undefined,
-      provider: process.env.HERMES_PROVIDER || undefined,
+      baseUrl: process.env.HERMES_API_URL || config.hermes.url,
+      apiKey: process.env.HERMES_API_KEY || config.hermes.apiKey || undefined,
+      model: process.env.HERMES_MODEL || config.hermes.model || undefined,
+      provider: process.env.HERMES_PROVIDER || config.hermes.provider || undefined,
       requestTimeoutMs: Math.min(timeoutMs, Number(process.env.HERMES_REQUEST_TIMEOUT_MS) || 10_000),
     });
   } else if (runtimeId === "openclaw") {

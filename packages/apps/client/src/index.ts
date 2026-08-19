@@ -59,10 +59,10 @@ const runtimes = new RuntimeRegistry()
       || resolve(os.homedir(), ".openclaw", "device-identity.json"),
   }))
   .register(new HermesAdapter({
-    baseUrl: process.env.HERMES_API_URL || "http://127.0.0.1:8642",
-    apiKey: process.env.HERMES_API_KEY || undefined,
-    model: process.env.HERMES_MODEL || undefined,
-    provider: process.env.HERMES_PROVIDER || undefined,
+    baseUrl: process.env.HERMES_API_URL || deviceConfig?.hermes.url || "http://127.0.0.1:8642",
+    apiKey: process.env.HERMES_API_KEY || deviceConfig?.hermes.apiKey || undefined,
+    model: process.env.HERMES_MODEL || deviceConfig?.hermes.model || undefined,
+    provider: process.env.HERMES_PROVIDER || deviceConfig?.hermes.provider || undefined,
     requestTimeoutMs: Number(process.env.HERMES_REQUEST_TIMEOUT_MS) || 60_000,
   }));
 runtimes.require(defaultRuntimeId);

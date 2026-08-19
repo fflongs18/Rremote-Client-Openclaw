@@ -84,6 +84,51 @@ npm run start:client
 
 首次使用 `openclaw-node` 可能触发 OpenClaw 设备配对。按 Gateway 的配对提示批准设备后，Client 会将设备身份保存在 `~/.openclaw/device-identity.json`。
 
+## 无人值守自举接入
+
+将根目录的 `connect-agent.ps1`（Windows）或 `connect-agent.sh`（macOS/Linux）交给目标电脑上的 Agent。首次接入只需要主控公开 HTTPS 地址和短期有效的一次性配对码：
+
+```powershell
+.\connect-agent.ps1 -Mode Check -Json
+.\connect-agent.ps1 -Mode Install `
+  -HubUrl "https://hub.example.com" `
+  -PairingCode "ONE-TIME-CODE" `
+  -DeviceName "Office PC" `
+  -OpenClawUrl "ws://127.0.0.1:18789" `
+  -HermesUrl "http://127.0.0.1:8642" `
+  -Json
+```
+
+```bash
+bash ./connect-agent.sh --mode check
+bash ./connect-agent.sh --mode install \
+  --hub-url "https://hub.example.com" \
+  --pairing-code "ONE-TIME-CODE" \
+  --device-name "Office Mac" \
+  --openclaw-url "ws://127.0.0.1:18789" \
+  --hermes-url "http://127.0.0.1:8642"
+```
+
+当脚本与仓库放在一起时会直接使用当前源码。只分发单个脚本时，额外传入 `-SourceUrl` / `--source-url`，指向可信的源码 ZIP 或发布包。脚本不会把 OpenClaw Token 或 Hermes API Key 发送给主控；这些密钥只保存在本机受保护的设备配置中。
+
+生命周期模式：
+
+- `Check` / `check`：检查 Node.js 版本和 Runtime 可达性，不修改系统。
+- `Install` / `install`：获取源码、构建、交换节点身份、注册后台启动并验证。
+- `Verify` / `verify`：验证 Runtime、本机设备身份和 Hub WebSocket。
+- `Repair` / `repair`：复用已有节点身份，重新构建并修复后台启动项。
+- `Uninstall` / `uninstall`：移除后台启动项和设备身份；传入 `KeepIdentity` 可保留身份。
+
+自动化测试使用隔离的临时目录，不连接真实 Hub，也不创建真实后台服务：
+
+```powershell
+npm run bootstrap:test
+```
+
+```bash
+bash ./scripts/test-connect-agent.sh
+```
+
 ## 协议注意事项
 
 - Remote Client ID 必须以 `remote-oc-` 开头，且不能以 `openclaw` 开头。

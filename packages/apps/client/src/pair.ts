@@ -7,7 +7,17 @@ function arg(name: string): string | undefined {
   return i >= 0 ? process.argv[i + 1] : undefined;
 }
 
-export interface PairOptions { code: string; name: string; hubUrl: string; gatewayUrl?: string; gatewayToken?: string | null }
+export interface PairOptions {
+  code: string;
+  name: string;
+  hubUrl: string;
+  gatewayUrl?: string;
+  gatewayToken?: string | null;
+  hermesUrl?: string;
+  hermesApiKey?: string | null;
+  hermesModel?: string | null;
+  hermesProvider?: string | null;
+}
 
 export async function pairDevice(options: PairOptions): Promise<DeviceConfig> {
   const requested = deriveHubUrls(options.hubUrl);
@@ -29,6 +39,12 @@ export async function pairDevice(options: PairOptions): Promise<DeviceConfig> {
     hubHttpUrl: returnedHttp.hubHttpUrl,
     hubWsUrl: typeof result.hubWsUrl === "string" && result.hubWsUrl.startsWith("wss://") ? result.hubWsUrl.replace(/\/$/, "") : returnedHttp.hubWsUrl,
     openClaw: { url: options.gatewayUrl || "ws://127.0.0.1:18789", token: options.gatewayToken || null },
+    hermes: {
+      url: options.hermesUrl || "http://127.0.0.1:8642",
+      apiKey: options.hermesApiKey || null,
+      model: options.hermesModel || null,
+      provider: options.hermesProvider || null,
+    },
     createdAt: Date.now(),
   };
   saveDeviceConfig(config);
@@ -36,10 +52,20 @@ export async function pairDevice(options: PairOptions): Promise<DeviceConfig> {
 }
 
 async function main(): Promise<void> {
-  const code = arg("--code");
+  const code = arg("--code") || process.env.REMOTE_OC_PAIRING_CODE;
   const hubUrl = arg("--hub-url") || process.env.JIANMU_PUBLIC_HTTP_URL || process.env.JIANMU_HTTP_URL;
   if (!code || !hubUrl) throw new Error("Usage: pair --hub-url https://hub.example.com --code ABC123 --name \"Office PC\"");
-  const config = await pairDevice({ code, hubUrl, name: arg("--name") || os.hostname(), gatewayUrl: arg("--gateway-url") || process.env.OPENCLAW_GATEWAY_URL, gatewayToken: process.env.OPENCLAW_GATEWAY_TOKEN });
+  const config = await pairDevice({
+    code,
+    hubUrl,
+    name: arg("--name") || os.hostname(),
+    gatewayUrl: arg("--gateway-url") || process.env.OPENCLAW_GATEWAY_URL,
+    gatewayToken: process.env.OPENCLAW_GATEWAY_TOKEN,
+    hermesUrl: arg("--hermes-url") || process.env.HERMES_API_URL,
+    hermesApiKey: process.env.HERMES_API_KEY,
+    hermesModel: process.env.HERMES_MODEL,
+    hermesProvider: process.env.HERMES_PROVIDER,
+  });
   console.log(JSON.stringify({ ok: true, nodeId: config.nodeId, nodeName: config.nodeName, hubHttpUrl: config.hubHttpUrl }));
 }
 

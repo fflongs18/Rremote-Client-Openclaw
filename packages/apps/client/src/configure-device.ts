@@ -15,8 +15,16 @@ function main(): void {
     url: gatewayUrl || config.openClaw.url,
     token: process.env.OPENCLAW_GATEWAY_TOKEN || config.openClaw.token || null,
   };
+  const hermesUrl = arg("--hermes-url");
+  if (hermesUrl && !/^https?:\/\//.test(hermesUrl)) throw new Error("Hermes URL must use http:// or https://");
+  config.hermes = {
+    url: hermesUrl || config.hermes.url,
+    apiKey: process.env.HERMES_API_KEY || config.hermes.apiKey || null,
+    model: process.env.HERMES_MODEL || config.hermes.model || null,
+    provider: process.env.HERMES_PROVIDER || config.hermes.provider || null,
+  };
   saveDeviceConfig(config);
-  console.log(JSON.stringify({ ok: true, nodeId: config.nodeId, gatewayUrl: config.openClaw.url }));
+  console.log(JSON.stringify({ ok: true, nodeId: config.nodeId, gatewayUrl: config.openClaw.url, hermesUrl: config.hermes.url }));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

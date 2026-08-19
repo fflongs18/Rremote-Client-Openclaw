@@ -14,6 +14,12 @@ export interface DeviceConfig {
     url: string;
     token: string | null;
   };
+  hermes: {
+    url: string;
+    apiKey: string | null;
+    model: string | null;
+    provider: string | null;
+  };
   createdAt?: number;
 }
 
@@ -26,6 +32,7 @@ function normalizeConfig(value: unknown): DeviceConfig | null {
   const raw = value as Record<string, unknown>;
   if (![raw.nodeId, raw.nodeToken, raw.nodeName, raw.hubWsUrl, raw.hubHttpUrl].every((item) => typeof item === "string" && item.length > 0)) return null;
   const openClaw = raw.openClaw && typeof raw.openClaw === "object" ? raw.openClaw as Record<string, unknown> : {};
+  const hermes = raw.hermes && typeof raw.hermes === "object" ? raw.hermes as Record<string, unknown> : {};
   return {
     version: 1,
     nodeId: String(raw.nodeId),
@@ -36,6 +43,12 @@ function normalizeConfig(value: unknown): DeviceConfig | null {
     openClaw: {
       url: typeof openClaw.url === "string" && openClaw.url ? openClaw.url : "ws://127.0.0.1:18789",
       token: typeof openClaw.token === "string" && openClaw.token ? openClaw.token : null,
+    },
+    hermes: {
+      url: typeof hermes.url === "string" && hermes.url ? hermes.url : "http://127.0.0.1:8642",
+      apiKey: typeof hermes.apiKey === "string" && hermes.apiKey ? hermes.apiKey : null,
+      model: typeof hermes.model === "string" && hermes.model ? hermes.model : null,
+      provider: typeof hermes.provider === "string" && hermes.provider ? hermes.provider : null,
     },
     ...(typeof raw.createdAt === "number" ? { createdAt: raw.createdAt } : {}),
   };
