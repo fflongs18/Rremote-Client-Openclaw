@@ -230,8 +230,13 @@ function formatBytes(size?: number): string {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function apiUrl(path: string): string {
+  const base = (import.meta.env.BASE_URL || "/").replace(/\/$/, "");
+  return `${base}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, {
+  const response = await fetch(apiUrl(url), {
     ...init,
     headers: { "Content-Type": "application/json", ...init?.headers },
   });
@@ -521,7 +526,7 @@ export default function App() {
         setError(detail);
       });
 
-    const source = new EventSource(`/api/tasks/${currentTaskId}/events`);
+    const source = new EventSource(apiUrl(`/api/tasks/${currentTaskId}/events`));
     eventSource.current = source;
     setConnection("connecting");
     source.onopen = () => setConnection("connected");
@@ -542,7 +547,7 @@ export default function App() {
   }, [active?.id, currentTaskId]);
 
   useEffect(() => {
-    const source = new EventSource("/api/events");
+    const source = new EventSource(apiUrl("/api/events"));
     source.addEventListener("agent-push", (raw) => {
       const push = JSON.parse((raw as MessageEvent).data) as AgentPushMessage;
       setPushes((current) => current.some((item) => item.messageId === push.messageId) ? current : [push, ...current].slice(0, 100));
