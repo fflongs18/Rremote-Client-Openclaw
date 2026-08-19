@@ -13,6 +13,7 @@ import {
   statusForEvent,
 } from "@remote-oc/protocol";
 import { JianmuClient } from "./jianmu.js";
+import { ingestHubPushes, rememberPush } from "./pushes.js";
 import { shouldUpdateStatus } from "./status.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -123,18 +124,37 @@ async function failTimedOutTask(taskId: string, phase: "accept" | "idle"): Promi
   }
 }
 
+function writeSseHeaders(res: express.Response): void {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+}
+
 function publishPush(push: AgentPushMessage): void {
-  recentPushes.push(push);
-  if (recentPushes.length > 100) recentPushes.shift();
+  if (!rememberPush(recentPushes, push)) return;
+  console.log(`[agent-push] ${push.from} ${push.title || push.text.slice(0, 40)} ${push.messageId}`);
   const packet = `event: agent-push\ndata: ${JSON.stringify(push)}\n\n`;
   for (const response of pushSubscribers) response.write(packet);
+}
+
+async function hydrateRecentPushes(): Promise<void> {
+  try {
+    ingestHubPushes(recentPushes, await jianmu.inbox(200));
+  } catch (error) {
+    console.error("Failed to load agent-push history", error);
+  }
 }
 
 jianmu.on("taskEvent", (event: RemoteTaskEvent) => void handleTaskEvent(event));
 
 jianmu.on("clientError", (error) => console.error("Jianmu WebSocket error", error));
 jianmu.on("agentPush", (push: AgentPushMessage) => publishPush(push));
+jianmu.on("connection", (online: boolean) => {
+  if (online) void hydrateRecentPushes();
+});
 jianmu.start();
+void hydrateRecentPushes();
 
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
@@ -253,11 +273,18 @@ app.post("/api/tasks/:taskId/cancel", async (req, res, next) => {
   }
 });
 
+app.get("/api/pushes", async (_req, res, next) => {
+  try {
+    await hydrateRecentPushes();
+    res.json([...recentPushes].reverse());
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/tasks/:taskId/events", async (req, res) => {
   const taskId = req.params.taskId;
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache, no-transform");
-  res.setHeader("Connection", "keep-alive");
+  writeSseHeaders(res);
   res.flushHeaders();
   res.write("retry: 1500\n\n");
   const set = subscribers.get(taskId) ?? new Set<express.Response>();
@@ -284,17 +311,20 @@ app.get("/api/tasks/:taskId/events", async (req, res) => {
 });
 
 app.get("/api/events", (req, res) => {
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache, no-transform");
-  res.setHeader("Connection", "keep-alive");
+  writeSseHeaders(res);
   res.flushHeaders();
   res.write("retry: 1500\n\n");
-  for (const push of recentPushes) res.write(`event: agent-push\ndata: ${JSON.stringify(push)}\n\n`);
-  pushSubscribers.add(res);
+  let closed = false;
   const heartbeat = setInterval(() => res.write(": heartbeat\n\n"), 20_000);
   req.on("close", () => {
+    closed = true;
     clearInterval(heartbeat);
     pushSubscribers.delete(res);
+  });
+  void hydrateRecentPushes().then(() => {
+    if (closed || res.writableEnded) return;
+    for (const push of recentPushes) res.write(`event: agent-push\ndata: ${JSON.stringify(push)}\n\n`);
+    pushSubscribers.add(res);
   });
 });
 

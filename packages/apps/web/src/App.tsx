@@ -235,6 +235,12 @@ function apiUrl(path: string): string {
   return `${base}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
+function mergePushes(current: AgentPushMessage[], incoming: AgentPushMessage[]): AgentPushMessage[] {
+  const byId = new Map(current.map((item) => [item.messageId, item]));
+  for (const item of incoming) byId.set(item.messageId, item);
+  return [...byId.values()].sort((a, b) => b.timestamp - a.timestamp).slice(0, 100);
+}
+
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(apiUrl(url), {
     ...init,
@@ -547,10 +553,16 @@ export default function App() {
   }, [active?.id, currentTaskId]);
 
   useEffect(() => {
+    let stopped = false;
+    void json<AgentPushMessage[]>("/api/pushes")
+      .then((items) => {
+        if (!stopped) setPushes((current) => mergePushes(current, items));
+      })
+      .catch(() => undefined);
     const source = new EventSource(apiUrl("/api/events"));
     source.addEventListener("agent-push", (raw) => {
       const push = JSON.parse((raw as MessageEvent).data) as AgentPushMessage;
-      setPushes((current) => current.some((item) => item.messageId === push.messageId) ? current : [push, ...current].slice(0, 100));
+      setPushes((current) => mergePushes(current, [push]));
       if (!push.sessionKey) return;
       setConversations((current) => current.map((conversation) => {
         if (conversation.sessionKey !== push.sessionKey || conversation.turns.some((turn) => turn.id === `push:${push.messageId}`)) return conversation;
@@ -563,7 +575,10 @@ export default function App() {
         return { ...conversation, turns: [...conversation.turns, turn], updatedAt: push.timestamp };
       }));
     });
-    return () => source.close();
+    return () => {
+      stopped = true;
+      source.close();
+    };
   }, []);
 
   async function submit(event: FormEvent) {

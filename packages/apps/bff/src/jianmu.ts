@@ -76,6 +76,11 @@ export class JianmuClient extends EventEmitter {
         runtime: "node",
         label: "OpenClaw Web Control",
       });
+      try {
+        this.sendRaw({ type: "subscribe", topic: "agent-push" });
+      } catch {
+        // register already succeeded; live pushes still route by session name
+      }
       this.emit("connection", true);
     });
 
@@ -87,6 +92,13 @@ export class JianmuClient extends EventEmitter {
         return;
       }
       if (message.type !== "message" || typeof message.content !== "string") return;
+      if (typeof message.id === "string" && message.id) {
+        try {
+          this.sendRaw({ type: "ack", messageId: message.id });
+        } catch {
+          // ACK is best-effort; display does not depend on it
+        }
+      }
       const event = parseJson<RemoteTaskEvent>(message.content);
       if (isRemoteTaskEvent(event)) this.emit("taskEvent", event, message);
       const push = parseJson<AgentPushMessage>(message.content);
@@ -182,10 +194,16 @@ export class JianmuClient extends EventEmitter {
   }
 
   messages(taskId: string): Promise<JianmuMessage[]> {
-    return this.request<JianmuMessage[]>(`/messages?limit=500&to=${encodeURIComponent(this.sessionName)}`)
+    return this.inbox(500)
       .then((messages) => messages.filter((message) => {
         const event = parseJson<RemoteTaskEvent>(message.content);
         return isRemoteTaskEvent(event) && event.taskId === taskId;
       }));
+  }
+
+  inbox(limit = 100): Promise<JianmuMessage[]> {
+    return this.request<JianmuMessage[]>(
+      `/messages?limit=${Math.max(1, Math.min(500, limit))}&to=${encodeURIComponent(this.sessionName)}`,
+    );
   }
 }
