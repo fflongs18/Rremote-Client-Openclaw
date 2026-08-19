@@ -51,7 +51,13 @@ wait_port_free() {
     port_listening "$port" || return 0
     sleep 0.3
   done
-  die "Port $port is already in use. Run npm run stop:public and retry."
+  local pids=""
+  if command -v lsof >/dev/null 2>&1; then
+    pids="$(lsof -t -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | tr '\n' ' ' || true)"
+  elif command -v ss >/dev/null 2>&1; then
+    pids="$(ss -ltnp 2>/dev/null | awk -v p=":$port" '$4 ~ p"$" {print $0}')"
+  fi
+  die "Port $port is already in use${pids:+ by $pids}. Run: ss -ltnp | grep $port  then kill the PID, or npm run stop:public"
 }
 
 wait_json() {
@@ -134,10 +140,8 @@ command -v curl >/dev/null 2>&1 || die 'curl is required'
 command -v openssl >/dev/null 2>&1 || die 'openssl is required'
 
 mkdir -p "$STATE_DIR" "$log_dir"
-if [[ -f "$state_path" ]]; then
-  echo 'Stopping existing public stack...'
-  bash "$ROOT/stop-public-stack.sh" --state-dir "$STATE_DIR"
-fi
+echo 'Stopping existing public stack if present...'
+bash "$ROOT/stop-public-stack.sh" --state-dir "$STATE_DIR" --hub-port "$HUB_PORT" --bff-port "$BFF_PORT"
 
 token="$(auth_token)"
 ngrok="$(find_ngrok)"

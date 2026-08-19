@@ -49,9 +49,8 @@ function Wait-PortFree([int]$Port, [int]$Seconds = 12) {
 
 function Stop-ExistingPublicStack {
   $stopScript = Join-Path $PSScriptRoot 'stop-public-stack.ps1'
-  if (-not (Test-Path -LiteralPath $statePath)) { return }
-  Write-Host 'Stopping existing public stack...'
-  & $stopScript -StateDir $StateDir
+  Write-Host 'Stopping existing public stack if present...'
+  & $stopScript -StateDir $StateDir -HubPort $HubPort -BffPort $BffPort
   if ($LASTEXITCODE) { throw "Failed to stop existing public stack (exit $LASTEXITCODE)" }
 }
 
