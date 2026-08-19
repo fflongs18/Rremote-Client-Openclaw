@@ -20,6 +20,7 @@
     "bootstrap:check": "powershell -ExecutionPolicy Bypass -File ./connect-agent.ps1 -Mode Check -Json",
     "bootstrap:test": "powershell -ExecutionPolicy Bypass -File ./scripts/test-connect-agent.ps1",
     "package:windows": "powershell -ExecutionPolicy Bypass -File ./scripts/package-windows.ps1",
+    "install:release": "powershell -ExecutionPolicy Bypass -File ./installer/bootstrap.ps1",
     "start:public": "powershell -ExecutionPolicy Bypass -File ./start-public-stack.ps1",
     "restart:public": "powershell -ExecutionPolicy Bypass -File ./start-public-stack.ps1",
     "stop:public": "powershell -ExecutionPolicy Bypass -File ./stop-public-stack.ps1",
