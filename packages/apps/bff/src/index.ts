@@ -19,7 +19,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: resolve(here, "../../../../.env") });
 
 const host = process.env.BFF_HOST || "127.0.0.1";
-const port = Number(process.env.BFF_PORT || 8787);
+const port = Number(process.env.BFF_PORT || 8788);
 const taskAcceptTimeoutMs = Math.max(1_000, Number(process.env.TASK_ACCEPT_TIMEOUT_MS) || 15_000);
 const taskIdleTimeoutMs = Math.max(taskAcceptTimeoutMs, Number(process.env.TASK_IDLE_TIMEOUT_MS) || 120_000);
 const controlId = process.env.WEB_CONTROL_ID || "web-control";

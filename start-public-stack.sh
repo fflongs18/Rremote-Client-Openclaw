@@ -6,10 +6,26 @@ HUB_PATH="${HUB_PATH:-$(cd "$ROOT/.." && pwd)/xihe-jianmu-ipc}"
 PUBLIC_HTTP_URL="${PUBLIC_HTTP_URL:-}"
 DOMAIN="${DOMAIN:-}"
 HUB_PORT="${HUB_PORT:-${IPC_PORT:-3179}}"
-BFF_PORT="${BFF_PORT:-8787}"
+BFF_PORT="${BFF_PORT:-}"
 STATE_DIR="${STATE_DIR:-$HOME/.remote-oc/public-stack}"
 SKIP_NGROK="${SKIP_NGROK:-0}"
 DEFAULT_DOMAIN="carpenter-tyke-similarly.ngrok-free.dev"
+DEFAULT_BFF_PORT="8788"
+
+dotenv_get() {
+  local key="$1" file="$ROOT/.env"
+  [[ -f "$file" ]] || return 0
+  awk -F= -v k="$key" '
+    $0 ~ /^[[:space:]]*#/ { next }
+    $1 == k {
+      v = substr($0, index($0, "=") + 1)
+      gsub(/\r/, "", v)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+      gsub(/^["'\'']|["'\'']$/, "", v)
+      print v
+    }
+  ' "$file" | tail -n 1
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -23,6 +39,11 @@ while [[ $# -gt 0 ]]; do
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
 done
+
+if [[ -z "$BFF_PORT" ]]; then
+  BFF_PORT="$(dotenv_get BFF_PORT || true)"
+fi
+BFF_PORT="${BFF_PORT:-$DEFAULT_BFF_PORT}"
 
 state_path="$STATE_DIR/state.json"
 secret_path="$STATE_DIR/auth-token.txt"

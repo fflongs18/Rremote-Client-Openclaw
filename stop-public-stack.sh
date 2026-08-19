@@ -3,7 +3,7 @@ set -euo pipefail
 
 STATE_DIR="${STATE_DIR:-$HOME/.remote-oc/public-stack}"
 HUB_PORT="${HUB_PORT:-${IPC_PORT:-3179}}"
-BFF_PORT="${BFF_PORT:-8787}"
+BFF_PORT="${BFF_PORT:-8788}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --state-dir) STATE_DIR="$2"; shift 2 ;;

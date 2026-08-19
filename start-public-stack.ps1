@@ -3,7 +3,7 @@ param(
   [string]$PublicHttpUrl = '',
   [string]$Domain = '',
   [int]$HubPort = 3179,
-  [int]$BffPort = 8787,
+  [int]$BffPort = 8788,
   [string]$StateDir = (Join-Path $env:USERPROFILE '.remote-oc\public-stack'),
   [switch]$SkipNgrok
 )
@@ -12,6 +12,25 @@ $ErrorActionPreference = 'Stop'
 $statePath = Join-Path $StateDir 'state.json'
 $secretPath = Join-Path $StateDir 'auth-token.txt'
 $logDir = Join-Path $StateDir 'logs'
+
+function Get-DotEnvValue([string]$Key) {
+  $path = Join-Path $PSScriptRoot '.env'
+  if (-not (Test-Path -LiteralPath $path)) { return $null }
+  foreach ($line in Get-Content -LiteralPath $path) {
+    if ($line -match ('^\s*' + [regex]::Escape($Key) + '=(.*)$')) {
+      return $Matches[1].Trim().Trim('"').Trim("'")
+    }
+  }
+  return $null
+}
+
+if (-not $PSBoundParameters.ContainsKey('BffPort')) {
+  if ($env:BFF_PORT) { $BffPort = [int]$env:BFF_PORT }
+  else {
+    $fromFile = Get-DotEnvValue 'BFF_PORT'
+    if ($fromFile) { $BffPort = [int]$fromFile }
+  }
+}
 
 function Wait-Json([string]$Url, [hashtable]$Headers = @{}, [int]$Seconds = 30) {
   $deadline = (Get-Date).AddSeconds($Seconds)

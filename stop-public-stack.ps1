@@ -1,7 +1,7 @@
 param(
   [string]$StateDir = (Join-Path $env:USERPROFILE '.remote-oc\public-stack'),
   [int]$HubPort = 3179,
-  [int]$BffPort = 8787
+  [int]$BffPort = 8788
 )
 
 $ErrorActionPreference = 'Stop'

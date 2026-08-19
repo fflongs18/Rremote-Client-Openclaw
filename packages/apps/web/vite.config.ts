@@ -8,7 +8,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, repoRoot, "");
   const bffHost = env.BFF_HOST || "127.0.0.1";
-  const bffPort = env.BFF_PORT || "8787";
+  const bffPort = env.BFF_PORT || "8788";
 
   return {
     plugins: [react()],
