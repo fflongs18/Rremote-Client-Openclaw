@@ -17,12 +17,16 @@ param(
   [switch]$StartHermes,
   [string]$HermesExecutable = 'hermes',
   [string]$HermesWorkingDirectory = '',
+  [string]$StartupDirectory = '',
   [switch]$NoAutostart,
   [switch]$Json
 )
 
 $ErrorActionPreference = 'Stop'
 $taskName = 'Remote-OC-Client'
+$startupFileName = 'Remote-OC-Client.cmd'
+if ([string]::IsNullOrWhiteSpace($PackageRoot)) { $PackageRoot = $PSScriptRoot }
+if ([string]::IsNullOrWhiteSpace($PackageRoot)) { throw 'PackageRoot could not be determined' }
 
 function Result([bool]$Ok, [string]$Stage, [hashtable]$Extra = @{}) {
   $value = [ordered]@{ ok = $Ok; stage = $Stage; installDir = $InstallDir; configPath = $ConfigPath }
@@ -32,6 +36,15 @@ function Result([bool]$Ok, [string]$Stage, [hashtable]$Extra = @{}) {
   if ($Json -or $Ok) { Write-Output $text } else { Write-Error $text }
 }
 
+function Get-Sha256Hex([string]$Path) {
+  $stream = [IO.File]::OpenRead($Path)
+  try {
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha256.ComputeHash($stream))).Replace('-', '').ToLowerInvariant() }
+    finally { $sha256.Dispose() }
+  } finally { $stream.Dispose() }
+}
+
 function Assert-Release {
   $manifestPath = Join-Path $PackageRoot 'manifest.json'
   if (-not (Test-Path $manifestPath)) { throw 'Release manifest.json is missing' }
@@ -39,7 +52,7 @@ function Assert-Release {
   foreach ($file in @($manifest.files)) {
     $path = Join-Path $PackageRoot ($file.path -replace '/', '\')
     if (-not (Test-Path $path)) { throw "Release file is missing: $($file.path)" }
-    $actual = (Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant()
+    $actual = Get-Sha256Hex $path
     if ($actual -ne [string]$file.sha256) { throw "Release checksum mismatch: $($file.path)" }
   }
   return $manifest
@@ -89,13 +102,41 @@ function Install-Launcher([string]$NodePath, [string]$ClientEntry) {
     "set `"PATH=$InstallDir\runtime;%PATH%`"",
     "`"$NodePath`" `"$ClientEntry`""
   ) | Set-Content -LiteralPath $launcher -Encoding ASCII
-  if (-not $NoAutostart) {
+
+  if ($NoAutostart) { return @{ launcher = $launcher; autostart = 'none' } }
+
+  $resolvedStartupDirectory = $StartupDirectory
+  if ([string]::IsNullOrWhiteSpace($resolvedStartupDirectory)) {
+    $resolvedStartupDirectory = [Environment]::GetFolderPath('Startup')
+  }
+  if ([string]::IsNullOrWhiteSpace($resolvedStartupDirectory)) {
+    $resolvedStartupDirectory = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup'
+  }
+  $startupLauncher = Join-Path $resolvedStartupDirectory $startupFileName
+  Remove-Item -LiteralPath $startupLauncher -Force -ErrorAction SilentlyContinue
+
+  try {
     $action = New-ScheduledTaskAction -Execute $env:ComSpec -Argument "/c `"$launcher`"" -WorkingDirectory $InstallDir
     $trigger = New-ScheduledTaskTrigger -AtLogOn
     Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Description 'OpenClaw/Hermes Remote Client' -Force | Out-Null
     Start-ScheduledTask -TaskName $taskName
+    return @{ launcher = $launcher; autostart = 'scheduled-task' }
+  } catch {
+    $scheduledTaskError = $_.Exception.Message
+    try {
+      Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
+    } catch {}
+
+    New-Item -ItemType Directory -Force -Path $resolvedStartupDirectory | Out-Null
+    Copy-Item -LiteralPath $launcher -Destination $startupLauncher -Force
+    try {
+      Start-Process -FilePath $env:ComSpec -ArgumentList @('/c', "`"$launcher`"") -WorkingDirectory $InstallDir -WindowStyle Hidden | Out-Null
+    } catch {
+      Remove-Item -LiteralPath $startupLauncher -Force -ErrorAction SilentlyContinue
+      throw "Scheduled task failed ($scheduledTaskError) and Startup fallback could not be started ($($_.Exception.Message))"
+    }
+    return @{ launcher = $launcher; autostart = 'startup-folder'; scheduledTaskError = $scheduledTaskError }
   }
-  return $launcher
 }
 
 function Wait-ForOnline([string]$NodePath, [string]$VerifyScript, [string]$NodeId, [string]$NodeToken, [string]$HttpUrl) {
@@ -125,6 +166,7 @@ try {
   New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
   Copy-Item -LiteralPath (Join-Path $PackageRoot 'app') -Destination $InstallDir -Recurse -Force
   Copy-Item -LiteralPath (Join-Path $PackageRoot 'runtime') -Destination $InstallDir -Recurse -Force
+  Copy-Item -LiteralPath (Join-Path $PackageRoot 'uninstall.ps1') -Destination (Join-Path $InstallDir 'uninstall.ps1') -Force
   $installedApp = Join-Path $InstallDir 'app'
   $installedNode = Join-Path $InstallDir 'runtime\node.exe'
   $installedPair = Join-Path $installedApp 'client\dist\pair.js'
@@ -142,11 +184,11 @@ try {
   } finally { Pop-Location }
 
   $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
-  $launcher = Install-Launcher $installedNode (Join-Path $installedApp 'client\dist\index.js')
+  $launcherStatus = Install-Launcher $installedNode (Join-Path $installedApp 'client\dist\index.js')
   if (-not $NoAutostart) {
     $online = Wait-ForOnline $installedNode $installedVerify $config.nodeId $config.nodeToken $config.hubHttpUrl
   }
-  Result $true 'complete' @{ message = '接入成功'; nodeId = $config.nodeId; nodeName = $config.nodeName; hub = 'connected'; online = (-not $NoAutostart); hermes = $hermesStatus; runtimes = if ($online) { $online.runtimes } else { @() }; launcher = $launcher; packageVersion = $manifest.packageVersion }
+  Result $true 'complete' @{ message = '接入成功'; nodeId = $config.nodeId; nodeName = $config.nodeName; hub = 'connected'; online = (-not $NoAutostart); hermes = $hermesStatus; runtimes = if ($online) { $online.runtimes } else { @() }; launcher = $launcherStatus.launcher; autostart = $launcherStatus.autostart; packageVersion = $manifest.packageVersion }
 } catch {
   Result $false 'failed' @{ error = $_.Exception.Message }
   exit 1

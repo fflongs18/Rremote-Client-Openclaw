@@ -1,4 +1,4 @@
-import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, KeyboardEvent, ReactElement, useEffect, useMemo, useRef, useState } from "react";
 
 type Status = "idle" | "pending" | "started" | "in_progress" | "completed" | "failed" | "cancelled";
 
@@ -78,6 +78,15 @@ interface NotificationRecord {
   from?: string;
   artifact?: AgentPushMessage["artifact"];
   timestamp: number;
+}
+
+interface PairingSession {
+  id: string;
+  deviceName: string;
+  expiresAt: number;
+  installUrl: string;
+  windowsInstallUrl: string;
+  macInstallUrl: string;
 }
 
 const STORAGE_KEY = "remote-oc:conversations:v1";
@@ -251,7 +260,44 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
+interface EnrollmentInfo {
+  deviceName: string;
+  expiresAt: number;
+  used: boolean;
+  windowsInstallUrl: string;
+  macInstallUrl: string;
+}
+
+function EnrollmentPage({ token }: { token: string }): ReactElement {
+  const [info, setInfo] = useState<EnrollmentInfo | null>(null);
+  const [status, setStatus] = useState("loading");
+  const [error, setError] = useState("");
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    let stopped = false;
+    const load = async () => {
+      try {
+        const value = await json<EnrollmentInfo>(`/api/enroll/${encodeURIComponent(token)}`);
+        if (!stopped) { setInfo(value); setStatus(value.used ? "installing" : "ready"); }
+      } catch (cause) { if (!stopped) { setError(cause instanceof Error ? cause.message : String(cause)); setStatus("expired"); } }
+    };
+    void load();
+    const timer = window.setInterval(() => {
+      setNow(Date.now());
+      if (status === "installing") void json<{ status: string }>(`/api/enroll/${encodeURIComponent(token)}/status`).then((value) => !stopped && setStatus(value.status)).catch(() => undefined);
+    }, 3000);
+    return () => { stopped = true; window.clearInterval(timer); };
+  }, [token, status]);
+  const secondsLeft = info ? Math.max(0, Math.ceil((info.expiresAt - now) / 1000)) : 0;
+  if (error || status === "expired") return <main className="enrollment-page"><section className="enrollment-card"><span className="welcome-mark">OC</span><h1>安装链接已失效</h1><p>{error || "请回到主控重新生成安装链接。"}</p></section></main>;
+  if (!info) return <main className="enrollment-page"><section className="enrollment-card"><span className="welcome-mark">OC</span><h1>正在准备安装</h1><p>请稍候...</p></section></main>;
+  return <main className="enrollment-page"><section className="enrollment-card"><span className="welcome-mark">OC</span><h1>添加 {info.deviceName}</h1><p>{secondsLeft > 0 ? `链接有效期：${Math.floor(secondsLeft / 60)}:${String(secondsLeft % 60).padStart(2, "0")}` : "链接已失效"}</p><div className="enrollment-downloads"><a className="primary-command" href={info.macInstallUrl}>下载 macOS 安装器</a><a className="primary-command" href={info.windowsInstallUrl}>下载 Windows 安装器</a></div><p className="enrollment-status">{status === "connected" ? "设备已成功连接主控" : status === "installing" ? "安装器正在连接主控..." : "选择对应系统下载安装器"}</p></section></main>;
+}
+
 export default function App() {
+  const basePath = (import.meta.env.BASE_URL || "/").replace(/\/$/, "");
+  const enrollmentMatch = window.location.pathname.match(new RegExp(`^${basePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/enroll/([^/]+)$`));
+  if (enrollmentMatch) return <EnrollmentPage token={decodeURIComponent(enrollmentMatch[1])} />;
   const [clients, setClients] = useState<Client[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>(loadConversations);
   const [emptyClientIds, setEmptyClientIds] = useState<Set<string>>(loadEmptyClients);
@@ -265,6 +311,12 @@ export default function App() {
   const [selectedNotificationId, setSelectedNotificationId] = useState("");
   const [notificationRuntime, setNotificationRuntime] = useState("all");
   const [notificationType, setNotificationType] = useState("all");
+  const [showAddDevice, setShowAddDevice] = useState(false);
+  const [pairingName, setPairingName] = useState("");
+  const [pairingSession, setPairingSession] = useState<PairingSession | null>(null);
+  const [pairingPending, setPairingPending] = useState(false);
+  const [pairingError, setPairingError] = useState("");
+  const [pairingClock, setPairingClock] = useState(Date.now());
   const eventSource = useRef<EventSource | null>(null);
   const messageEnd = useRef<HTMLDivElement | null>(null);
   const initializedClients = useRef(false);
@@ -347,6 +399,10 @@ export default function App() {
     }
     return [...labels.entries()].map(([id, label]) => ({ id, label }));
   }, [clients, notifications]);
+  const pairingExpiresAt = pairingSession
+    ? pairingSession.expiresAt < 10_000_000_000 ? pairingSession.expiresAt * 1000 : pairingSession.expiresAt
+    : 0;
+  const pairingSecondsLeft = Math.max(0, Math.ceil((pairingExpiresAt - pairingClock) / 1000));
 
   function updateConversation(id: string, update: (value: Conversation) => Conversation): void {
     setConversations((current) => current.map((item) => item.id === id ? update(item) : item));
@@ -444,6 +500,19 @@ export default function App() {
   useEffect(() => {
     if (activeId) localStorage.setItem(ACTIVE_KEY, activeId);
   }, [activeId]);
+
+  useEffect(() => {
+    if (!showAddDevice) return;
+    const timer = window.setInterval(() => setPairingClock(Date.now()), 1000);
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") setShowAddDevice(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [showAddDevice]);
 
   useEffect(() => {
     let stopped = false;
@@ -645,6 +714,35 @@ export default function App() {
     }
   }
 
+  async function createPairing(event: FormEvent) {
+    event.preventDefault();
+    const nodeName = pairingName.trim();
+    if (!nodeName || pairingPending) return;
+    setPairingPending(true);
+    setPairingError("");
+    try {
+      const session = await json<PairingSession>("/api/pairing", {
+        method: "POST",
+        body: JSON.stringify({ nodeName }),
+      });
+      setPairingSession(session);
+      setPairingClock(Date.now());
+    } catch (cause) {
+      setPairingError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setPairingPending(false);
+    }
+  }
+
+  async function copyInstallUrl() {
+    if (!pairingSession?.installUrl) return;
+    try {
+      await navigator.clipboard.writeText(pairingSession.installUrl);
+    } catch {
+      setPairingError("无法访问剪贴板，请手动复制安装链接");
+    }
+  }
+
   return (
     <main className="app-shell">
       <aside className="sidebar">
@@ -653,6 +751,9 @@ export default function App() {
           <div><strong>OpenClaw</strong><small>Remote workspace</small></div>
         </div>
         <div className="sidebar-heading"><span>远程 Agent</span><span>{clients.filter((client) => client.online).length} 在线</span></div>
+        <button className="add-device-trigger" type="button" onClick={() => { setShowAddDevice(true); setPairingError(""); }} title="添加设备">
+          <span aria-hidden="true">＋</span><strong>添加设备</strong>
+        </button>
         <section className="sidebar-message-center">
           <button className={`message-center-toggle ${showMessageCenter ? "active" : ""}`} type="button" onClick={toggleMessageCenter} aria-expanded={showMessageCenter}>
             <span aria-hidden="true">铃</span><strong>消息中心</strong><b>{notifications.length}</b><i aria-hidden="true">›</i>
@@ -884,6 +985,39 @@ export default function App() {
           <div className="welcome-state"><span className="welcome-mark">OC</span><h2>等待远程 Agent 连接</h2><p>连接后会自动出现在左侧列表中。</p></div>
         )}
       </section>
+      {showAddDevice && (
+        <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowAddDevice(false); }}>
+          <section className="device-dialog" role="dialog" aria-modal="true" aria-labelledby="add-device-title">
+            <header className="device-dialog-header">
+              <div><h2 id="add-device-title">添加设备</h2><p>{pairingSession ? "安装链接" : "创建安装链接"}</p></div>
+              <button type="button" onClick={() => setShowAddDevice(false)} title="关闭" aria-label="关闭">×</button>
+            </header>
+            {!pairingSession ? (
+              <form className="pairing-form" onSubmit={createPairing}>
+                <label htmlFor="pairing-device-name">设备名称</label>
+                <input id="pairing-device-name" value={pairingName} onChange={(event) => setPairingName(event.target.value)} placeholder="例如：Office Mac" autoFocus maxLength={80} />
+                {pairingError && <div className="pairing-error">{pairingError}</div>}
+                <button className="primary-command" type="submit" disabled={!pairingName.trim() || pairingPending}>{pairingPending ? "正在生成..." : "生成安装链接"}</button>
+              </form>
+            ) : (
+              <div className="pairing-result">
+                <div className="enrollment-summary"><strong>{pairingSession.deviceName}</strong><span>{pairingSecondsLeft > 0 ? `有效期：${Math.floor(pairingSecondsLeft / 60)}:${String(pairingSecondsLeft % 60).padStart(2, "0")}` : "链接已失效"}</span></div>
+                <div className="install-link-actions">
+                  <a className="install-link-button" href={pairingSession.macInstallUrl}>下载 macOS 安装器</a>
+                  <a className="install-link-button" href={pairingSession.windowsInstallUrl}>下载 Windows 安装器</a>
+                  <button className="install-link-button secondary" type="button" onClick={copyInstallUrl}>复制安装链接</button>
+                </div>
+                <p className="install-link-note">在目标电脑打开链接后，选择对应系统下载安装器。</p>
+                {pairingError && <div className="pairing-error">{pairingError}</div>}
+                <footer className="pairing-actions">
+                  <button type="button" onClick={() => { setPairingSession(null); setPairingError(""); }}>重新生成</button>
+                  <button className="primary-command" type="button" onClick={() => setShowAddDevice(false)}>完成</button>
+                </footer>
+              </div>
+            )}
+          </section>
+        </div>
+      )}
     </main>
   );
 }

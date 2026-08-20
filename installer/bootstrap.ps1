@@ -22,11 +22,21 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Join-Path ([IO.Path]::GetTempPath()) ('remote-oc-bootstrap-' + [guid]::NewGuid().ToString('N'))
+
+function Get-Sha256Hex([string]$Path) {
+  $stream = [IO.File]::OpenRead($Path)
+  try {
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha256.ComputeHash($stream))).Replace('-', '').ToLowerInvariant() }
+    finally { $sha256.Dispose() }
+  } finally { $stream.Dispose() }
+}
+
 try {
   New-Item -ItemType Directory -Force -Path $root | Out-Null
   $archive = Join-Path $root 'release.zip'
   Invoke-WebRequest -Uri $PackageUrl -OutFile $archive
-  $actual = (Get-FileHash $archive -Algorithm SHA256).Hash
+  $actual = Get-Sha256Hex $archive
   if ($actual -ine $ExpectedSha256) { throw 'Release package SHA256 mismatch' }
   Expand-Archive -LiteralPath $archive -DestinationPath $root
   $release = if (Test-Path (Join-Path $root 'manifest.json')) {

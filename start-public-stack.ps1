@@ -151,10 +151,9 @@ $hubBind = '127.0.0.1'
 $bffHost = '127.0.0.1'
 $defaultDomain = 'carpenter-tyke-similarly.ngrok-free.dev'
 if ($useIpMode) {
-  $hubBind = '0.0.0.0'
   $bffHost = '0.0.0.0'
   if (-not $PublicHttpUrl) {
-    $PublicHttpUrl = "http://$(Get-LanIp):$HubPort"
+    $PublicHttpUrl = "http://$(Get-LanIp):$BffPort"
   }
 } elseif (-not $PublicHttpUrl) {
   $PublicHttpUrl = if ($Domain) { "https://$Domain" } else { "https://$defaultDomain" }
@@ -165,7 +164,7 @@ if (($publicUri.Scheme -ne 'https' -and -not $isHttpIp) -or -not $publicUri.Host
   throw 'PublicHttpUrl must be https://host or http://IP:port'
 }
 $publicHttp = $publicUri.GetLeftPart([UriPartial]::Authority).TrimEnd('/')
-$publicWs = $publicHttp -replace '^http', 'ws'
+$publicWs = (($publicHttp -replace '^http', 'ws').TrimEnd('/') + '/ws')
 $ngrokUrl = $publicUri.Host
 $dbPath = Join-Path $StateDir 'hub.db'
 Wait-PortFree $HubPort
@@ -190,22 +189,28 @@ try {
   $auth = @{ Authorization = "Bearer $token" }
   Wait-Json "http://127.0.0.1:$HubPort/health" $auth | Out-Null
 
-  $tunnel = $null
-  if (-not $useIpMode) {
-    $tunnel = Start-Process -FilePath $ngrok -ArgumentList @('http', "--url=$ngrokUrl", [string]$HubPort) -WindowStyle Hidden -PassThru `
-      -RedirectStandardOutput (Join-Path $logDir 'ngrok.out.log') -RedirectStandardError (Join-Path $logDir 'ngrok.err.log')
-    $publicHeaders = @{ Authorization = "Bearer $token"; 'ngrok-skip-browser-warning' = '1' }
-    Wait-Json "$publicHttp/health" $publicHeaders 45 | Out-Null
-  }
-
   $env:JIANMU_HTTP_URL = "http://127.0.0.1:$HubPort"
   $env:JIANMU_HUB_URL = "ws://127.0.0.1:$HubPort"
   $env:JIANMU_AUTH_TOKEN = $token
+  $env:JIANMU_PUBLIC_HTTP_URL = $publicHttp
+  $env:JIANMU_PUBLIC_WS_URL = $publicWs
+  $env:REMOTE_OC_CONTROL_URL = $publicHttp
+  $env:REMOTE_OC_RELEASE_BASE_URL = "$publicHttp/release"
+  $env:REMOTE_OC_ENROLLMENT_STATE_PATH = Join-Path $StateDir 'enrollment-sessions.json'
   $env:BFF_PORT = [string]$BffPort
   $env:BFF_HOST = $bffHost
   $app = Start-Process -FilePath (Get-Command npm.cmd).Source -ArgumentList @('run', 'dev:bff') -WorkingDirectory $PSScriptRoot -WindowStyle Hidden -PassThru `
     -RedirectStandardOutput (Join-Path $logDir 'app.out.log') -RedirectStandardError (Join-Path $logDir 'app.err.log')
   Wait-Json "http://127.0.0.1:$BffPort/api/health" @{} 45 | Out-Null
+
+  $tunnel = $null
+  if (-not $useIpMode) {
+    $tunnel = Start-Process -FilePath $ngrok -ArgumentList @('http', "--url=$ngrokUrl", [string]$BffPort) -WindowStyle Hidden -PassThru `
+      -RedirectStandardOutput (Join-Path $logDir 'ngrok.out.log') -RedirectStandardError (Join-Path $logDir 'ngrok.err.log')
+    $publicHeaders = @{ 'ngrok-skip-browser-warning' = '1' }
+    Wait-Json "$publicHttp/api/health" $publicHeaders 45 | Out-Null
+    Wait-Json "$publicHttp/health" @{ Authorization = "Bearer $token"; 'ngrok-skip-browser-warning' = '1' } 15 | Out-Null
+  }
 
   [pscustomobject]@{
     startedAt = (Get-Date).ToString('o')
@@ -216,6 +221,7 @@ try {
     bffPort = $BffPort
     publicHttpUrl = $publicHttp
     publicWsUrl = $publicWs
+    releaseBaseUrl = "$publicHttp/release"
     logDir = $logDir
   } | ConvertTo-Json | Set-Content -LiteralPath $statePath -Encoding UTF8
 
@@ -226,8 +232,9 @@ try {
     Write-Host "Hub HTTP: $publicHttp"
     Write-Host "Hub WS:   $publicWs"
   } else {
-    Write-Host "Public HTTP: $publicHttp"
-    Write-Host "Public WSS:  $publicWs"
+    Write-Host "Controller: $publicHttp"
+    Write-Host "Hub WSS:    $publicWs"
+    Write-Host "Releases:   $publicHttp/release"
   }
   Write-Host "Logs: $logDir"
 } catch {

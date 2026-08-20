@@ -66,7 +66,7 @@ function restrictWindowsAcl(path: string): void {
     ? `${process.env.USERDOMAIN}\\${process.env.USERNAME}`
     : process.env.USERNAME;
   if (!user) throw new Error("Cannot determine current Windows user for device config ACL");
-  execFileSync("icacls.exe", [path, "/inheritance:r", "/grant:r", `${user}:(R,W)`, "SYSTEM:(F)"], { stdio: "ignore" });
+  execFileSync("icacls.exe", [path, "/inheritance:r", "/grant:r", `${user}:(M)`, "SYSTEM:(F)"], { stdio: "ignore" });
 }
 
 export function saveDeviceConfig(config: DeviceConfig): void {

@@ -2,6 +2,7 @@ import dotenv from "dotenv";
 import express from "express";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import WebSocket, { WebSocketServer } from "ws";
 import {
   REMOTE_CLIENT_PREFIX,
   type RemoteTaskEvent,
@@ -15,6 +16,7 @@ import {
 import { JianmuClient } from "./jianmu.js";
 import { ingestHubPushes, rememberPush } from "./pushes.js";
 import { shouldUpdateStatus } from "./status.js";
+import { createEnrollment, consumeEnrollment, enrollmentBaseUrl, getEnrollment } from "./enrollment.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: resolve(here, "../../../../.env") });
@@ -33,6 +35,14 @@ const jianmu = new JianmuClient(
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
+const repoRoot = resolve(here, "../../../..");
+const publicPaths = /^(\/api\/health$|\/api\/enroll\/|\/enroll\/|\/release\/|\/assets\/|\/health$|\/pairing-sessions\/exchange$|\/nodes(?:\/|$)|\/tasks(?:\/|$)|\/send$)/;
+app.use((req, res, next) => {
+  const hostname = req.hostname.toLowerCase();
+  const localHost = hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+  if (localHost || publicPaths.test(req.path)) { next(); return; }
+  res.status(404).send("Not found");
+});
 
 const subscribers = new Map<string, Set<express.Response>>();
 const pushSubscribers = new Set<express.Response>();
@@ -158,11 +168,89 @@ void hydrateRecentPushes();
 
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
+app.get("/release/install.ps1", (_req, res) => res.sendFile(resolve(repoRoot, "install.ps1")));
+app.get("/release/install.sh", (_req, res) => res.sendFile(resolve(repoRoot, "install.sh")));
+app.get("/release/release.json", (_req, res) => res.sendFile(resolve(repoRoot, "release.json")));
+app.get("/release/artifacts/:file", (req, res) => {
+  if (!/^RemoteOpenClaw-[A-Za-z0-9._-]+\.(zip|tar\.gz)(\.sha256)?$/.test(req.params.file)) {
+    res.status(404).send("Release artifact not found");
+    return;
+  }
+  res.sendFile(resolve(repoRoot, "artifacts", req.params.file));
+});
+
 app.post("/api/pairing", async (req, res, next) => {
   try {
     const nodeName = typeof req.body?.nodeName === "string" && req.body.nodeName.trim() ? req.body.nodeName.trim() : "Remote Client";
     const pairing = await jianmu.createPairingSession(nodeName);
-    res.status(201).json({ ...pairing, installCommand: `npm run pair -- --code ${pairing.code} --name \"${nodeName.replace(/\"/g, "\\\"")}\"` });
+    const enrollment = createEnrollment(nodeName, pairing.code, pairing.expiresAt);
+    const base = enrollmentBaseUrl(req);
+    const installUrl = `${base}/enroll/${enrollment.token}`;
+    res.status(201).json({ id: enrollment.id, deviceName: nodeName, expiresAt: enrollment.expiresAt, installUrl, windowsInstallUrl: `${base}/api/enroll/${enrollment.token}/windows`, macInstallUrl: `${base}/api/enroll/${enrollment.token}/macos` });
+  } catch (error) { next(error); }
+});
+
+app.get("/api/enroll/:token", (req, res) => {
+  const session = getEnrollment(req.params.token);
+  if (!session) { res.status(404).json({ error: "安装链接已失效或不存在" }); return; }
+  res.json({ id: session.id, deviceName: session.nodeName, expiresAt: session.expiresAt, used: Boolean(session.usedAt), windowsInstallUrl: `${enrollmentBaseUrl(req)}/api/enroll/${session.token}/windows`, macInstallUrl: `${enrollmentBaseUrl(req)}/api/enroll/${session.token}/macos` });
+});
+
+app.get("/api/enroll/:token/:platform", (req, res) => {
+  const session = getEnrollment(req.params.token);
+  if (!session) { res.status(404).send("安装链接已失效或不存在"); return; }
+  if (req.params.platform !== "windows" && req.params.platform !== "macos") { res.status(404).send("不支持的安装平台"); return; }
+  const base = process.env.REMOTE_OC_RELEASE_BASE_URL?.trim();
+  if (!base) { res.status(503).send("发布下载地址尚未配置"); return; }
+  const root = `${base.replace(/\/$/, "")}/install.${req.params.platform === "macos" ? "sh" : "ps1"}`;
+  const enrollUrl = `${enrollmentBaseUrl(req)}/api/enroll/${session.token}/exchange`;
+  res.setHeader("Content-Type", req.params.platform === "macos" ? "text/x-shellscript" : "text/plain");
+  res.setHeader("Content-Disposition", `attachment; filename=\"Remote-OC-${req.params.platform === "macos" ? "Mac" : "Windows"}-Installer.${req.params.platform === "macos" ? "command" : "ps1"}\"`);
+  if (req.params.platform === "macos") {
+    res.send(`#!/usr/bin/env bash\nset -euo pipefail\nprintf '\\n[Remote-OC] 正在准备安装器...\\n'\ntmp=$(mktemp)\ntrap 'rm -f "$tmp"' EXIT\ncurl --http1.1 --retry 3 --retry-delay 2 --retry-all-errors --fail --show-error --location --connect-timeout 15 --max-time 300 --progress-bar '${root}' -o "$tmp"\nexec bash "$tmp" --enroll-url '${enrollUrl}'\n`);
+  } else {
+    res.send(`$ErrorActionPreference = 'Stop'\n$tmp = Join-Path $env:TEMP 'remote-oc-install.ps1'\ntry { Invoke-WebRequest -UseBasicParsing -Uri '${root}' -OutFile $tmp; & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $tmp -EnrollUrl '${enrollUrl}' } finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }\n`);
+  }
+});
+
+app.post("/api/enroll/:token/exchange", async (req, res, next) => {
+  try {
+    const session = consumeEnrollment(req.params.token);
+    if (!session) { res.status(410).json({ error: "安装链接已失效或不存在" }); return; }
+    const manifestUrl = process.env.REMOTE_OC_RELEASE_BASE_URL ? `${process.env.REMOTE_OC_RELEASE_BASE_URL.replace(/\/$/, "")}/release.json` : "";
+    const hubUrl = process.env.JIANMU_PUBLIC_HTTP_URL || process.env.JIANMU_HTTP_URL || "http://127.0.0.1:3179";
+    res.json({ hubUrl, pairingCode: session.pairingCode, deviceName: session.nodeName, manifestUrl, defaultRuntime: process.env.DEFAULT_RUNTIME || "openclaw", openClawUrl: process.env.OPENCLAW_GATEWAY_URL || "ws://127.0.0.1:18789", hermesUrl: process.env.HERMES_API_URL || "http://127.0.0.1:8642", hermesApiKey: process.env.HERMES_API_KEY || "", requireHermes: process.env.REQUIRE_HERMES === "1", startHermes: process.env.START_HERMES === "1" });
+  } catch (error) { next(error); }
+});
+
+app.get("/api/enroll/:token/status", async (req, res, next) => {
+  try {
+    const session = getEnrollment(req.params.token);
+    if (!session) { res.status(404).json({ status: "expired" }); return; }
+    if (!session.usedAt) { res.json({ status: "ready", deviceName: session.nodeName, expiresAt: session.expiresAt }); return; }
+    const clients = await jianmu.sessions();
+    const connected = clients.some((client) => client.label === session.nodeName || client.name === session.nodeName);
+    res.json({ status: connected ? "connected" : "installing", deviceName: session.nodeName, expiresAt: session.expiresAt });
+  } catch (error) { next(error); }
+});
+
+const hubProxyPaths = /^\/(health|pairing-sessions\/exchange|nodes(?:\/|$)|tasks(?:\/|$)|send$)/;
+app.use(async (req, res, next) => {
+  if (!hubProxyPaths.test(req.path)) { next(); return; }
+  try {
+    const headers = new Headers();
+    if (req.headers.authorization) headers.set("Authorization", req.headers.authorization);
+    if (req.headers["content-type"]) headers.set("Content-Type", String(req.headers["content-type"]));
+    const method = req.method.toUpperCase();
+    const upstream = await fetch(`${process.env.JIANMU_HTTP_URL || "http://127.0.0.1:3179"}${req.originalUrl}`, {
+      method,
+      headers,
+      body: method === "GET" || method === "HEAD" ? undefined : JSON.stringify(req.body ?? {}),
+    });
+    res.status(upstream.status);
+    const contentType = upstream.headers.get("content-type");
+    if (contentType) res.setHeader("Content-Type", contentType);
+    res.send(Buffer.from(await upstream.arrayBuffer()));
   } catch (error) { next(error); }
 });
 
@@ -339,8 +427,24 @@ app.use((error: unknown, _req: express.Request, res: express.Response, _next: ex
   res.status(502).json({ error: error instanceof Error ? error.message : "Unexpected error" });
 });
 
-app.listen(port, host, () => {
+const server = app.listen(port, host, () => {
   console.log(`OpenClaw Remote Control: http://${host}:${port}`);
+});
+const proxyWss = new WebSocketServer({ noServer: true });
+server.on("upgrade", (request, socket, head) => {
+  if (!request.url?.startsWith("/ws")) { socket.destroy(); return; }
+  proxyWss.handleUpgrade(request, socket, head, (downstream) => {
+    const upstreamBase = process.env.JIANMU_HUB_URL || "ws://127.0.0.1:3179";
+    const upstream = new WebSocket(`${upstreamBase.replace(/\/$/, "")}${request.url}`);
+    const pending: WebSocket.RawData[] = [];
+    downstream.on("message", (data) => upstream.readyState === WebSocket.OPEN ? upstream.send(data) : pending.push(data));
+    upstream.on("open", () => { for (const data of pending) upstream.send(data); });
+    upstream.on("message", (data) => { if (downstream.readyState === WebSocket.OPEN) downstream.send(data); });
+    upstream.on("close", (code, reason) => downstream.close(code, reason.toString()));
+    downstream.on("close", (code, reason) => upstream.close(code, reason.toString()));
+    upstream.on("error", () => downstream.close(1011, "Hub connection failed"));
+    downstream.on("error", () => upstream.close());
+  });
 });
 
 function shutdown(): void {

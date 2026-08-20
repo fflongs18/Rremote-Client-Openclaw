@@ -1,0 +1,21 @@
+{
+  "version": "0.1.0",
+  "platforms": {
+    "windows-x64": {
+      "url": "artifacts/RemoteOpenClaw-0.1.0-win-x64.zip",
+      "sha256": "5c1478ce4d6b53e0220a0bbda1b44966361bcf6516dcedbdabe80918fadaecb0"
+    },
+    "windows-arm64": {
+      "url": "artifacts/RemoteOpenClaw-0.1.0-win-arm64.zip",
+      "sha256": "60509c4f0e9844840d9cd12e145abcf7d3a5e38a044f827dc92b30fbaff267b5"
+    },
+    "macos-x64": {
+      "url": "artifacts/RemoteOpenClaw-0.1.0-mac-x64.tar.gz",
+      "sha256": "6cee08f537e865950947ffc84fbff1c5909b06a72aa4ccb6450dbf00db9303b1"
+    },
+    "macos-arm64": {
+      "url": "artifacts/RemoteOpenClaw-0.1.0-mac-arm64.tar.gz",
+      "sha256": "32f4cf37970bf8f95f94df30d4e80aecef5870fa2d811ca998b0d13a0099607d"
+    }
+  }
+}
