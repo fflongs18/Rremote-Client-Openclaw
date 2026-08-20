@@ -16,7 +16,7 @@ import {
 import { JianmuClient } from "./jianmu.js";
 import { ingestHubPushes, rememberPush } from "./pushes.js";
 import { shouldUpdateStatus } from "./status.js";
-import { createEnrollment, consumeEnrollment, enrollmentBaseUrl, getEnrollment } from "./enrollment.js";
+import { createEnrollment, consumeEnrollment, enrollmentBaseUrl, getEnrollment, isControlUiHost } from "./enrollment.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: resolve(here, "../../../../.env") });
@@ -38,9 +38,7 @@ app.use(express.json({ limit: "1mb" }));
 const repoRoot = resolve(here, "../../../..");
 const publicPaths = /^(\/api\/health$|\/api\/enroll\/|\/enroll\/|\/release\/|\/assets\/|\/health$|\/pairing-sessions\/exchange$|\/nodes(?:\/|$)|\/tasks(?:\/|$)|\/send$)/;
 app.use((req, res, next) => {
-  const hostname = req.hostname.toLowerCase();
-  const localHost = hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
-  if (localHost || publicPaths.test(req.path)) { next(); return; }
+  if (isControlUiHost(req.hostname) || publicPaths.test(req.path)) { next(); return; }
   res.status(404).send("Not found");
 });
 

@@ -88,3 +88,28 @@ export function enrollmentBaseUrl(req: { protocol: string; get(name: string): st
   if (configured) return configured.replace(/\/$/, "");
   return `${req.protocol}://${req.get("host") || "127.0.0.1:8788"}`;
 }
+
+function hostnameFromUrl(value: string | undefined): string | null {
+  const raw = value?.trim();
+  if (!raw) return null;
+  try {
+    return new URL(raw).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+export function isControlUiHost(hostname: string): boolean {
+  const host = hostname.trim().toLowerCase();
+  if (!host) return false;
+  if (host === "localhost" || host === "127.0.0.1" || host === "::1") return true;
+  const allowed = new Set<string>();
+  for (const candidate of [hostnameFromUrl(process.env.REMOTE_OC_CONTROL_URL), hostnameFromUrl(process.env.JIANMU_PUBLIC_HTTP_URL)]) {
+    if (candidate) allowed.add(candidate);
+  }
+  for (const extra of (process.env.REMOTE_OC_UI_HOSTS || "").split(",")) {
+    const value = extra.trim().toLowerCase();
+    if (value) allowed.add(value);
+  }
+  return allowed.has(host);
+}
