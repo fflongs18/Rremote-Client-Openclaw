@@ -20,9 +20,14 @@ try {
   Assert ($LASTEXITCODE -eq 0) "Unified installer failed: $output"
   $result=$output|Select-Object -Last 1|ConvertFrom-Json
   Assert ($result.ok -and $result.autostart -eq 'none') 'Unified installer returned an unexpected result'
+  Assert ($result.identity -eq 'paired') 'First install did not report a newly paired identity'
+  $secondOutput=& (Join-Path $repo 'install.ps1') -ManifestPath $manifestPath -HubUrl "http://127.0.0.1:$port" -PairingCode RELEASE-TEST-CODE -DeviceName 'Unified Test' -InstallDir $installDir -ConfigPath $configPath -NoAutostart -Json
+  Assert ($LASTEXITCODE -eq 0) "Repeated unified install failed: $secondOutput"
+  $secondResult=$secondOutput|Select-Object -Last 1|ConvertFrom-Json
+  Assert ($secondResult.identity -eq 'reused') 'Repeated install did not reuse the existing device identity'
   Assert (Test-Path (Join-Path $installDir 'uninstall.ps1')) 'Installed uninstaller is missing'
   & (Join-Path $installDir 'uninstall.ps1') -InstallDir $installDir -ConfigPath $configPath | Out-Null
   Assert (-not (Test-Path $installDir) -and -not (Test-Path $configPath)) 'Unified uninstall left files behind'
-  Write-Output (@{ok=$true;tests=5;platform='windows-x64'}|ConvertTo-Json -Compress)
+  Write-Output (@{ok=$true;tests=7;platform='windows-x64'}|ConvertTo-Json -Compress)
 } catch { $testError=$_ } finally { if ($mockProcess -and -not $mockProcess.HasExited) { Stop-Process -Id $mockProcess.Id -Force -ErrorAction SilentlyContinue }; if (-not $KeepTemporaryFiles) { Remove-Item $testRoot -Recurse -Force -ErrorAction SilentlyContinue } }
 if ($testError) { Write-Error $testError; exit 1 }

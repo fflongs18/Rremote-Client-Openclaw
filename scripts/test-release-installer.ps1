@@ -22,6 +22,12 @@ try {
   $parseErrors = $null
   $ast = [System.Management.Automation.Language.Parser]::ParseFile($installer, [ref]$tokens, [ref]$parseErrors)
   Assert ($parseErrors.Count -eq 0) 'Installer contains PowerShell parse errors'
+  $startupResolverFunction = $ast.Find({
+    param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Resolve-StartupDirectory'
+  }, $true)
+  Assert ($null -ne $startupResolverFunction) 'Resolve-StartupDirectory function was not found'
+  Invoke-Expression $startupResolverFunction.Extent.Text
   $launcherFunction = $ast.Find({
     param($node)
     $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Install-Launcher'
@@ -55,7 +61,34 @@ try {
   $disabled = Install-Launcher (Join-Path $InstallDir 'runtime\node.exe') (Join-Path $InstallDir 'app\client\dist\index.js')
   Assert ($disabled.autostart -eq 'none') 'NoAutostart did not disable startup registration'
 
-  Write-Output (@{ ok = $true; tests = 6; platform = 'windows'; temporaryRoot = $testRoot } | ConvertTo-Json -Compress)
+  $keyFunction = $ast.Find({
+    param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Find-OrCreateHermesApiKey'
+  }, $true)
+  Assert ($null -ne $keyFunction) 'Find-OrCreateHermesApiKey function was not found'
+  Invoke-Expression $keyFunction.Extent.Text
+  $HermesApiKey = ''
+  $previousProfile = $env:USERPROFILE
+  $previousAppData = $env:APPDATA
+  $previousProcessKey = [Environment]::GetEnvironmentVariable('API_SERVER_KEY', 'Process')
+  try {
+    $env:USERPROFILE = $testRoot
+    $env:APPDATA = Join-Path $testRoot 'AppData'
+    [Environment]::SetEnvironmentVariable('API_SERVER_KEY', $null, 'Process')
+    New-Item -ItemType Directory -Force -Path (Split-Path $ConfigPath) | Out-Null
+    '{"hermes":{"apiKey":"persisted-hermes-key-16"}}' | Set-Content -LiteralPath $ConfigPath -Encoding ASCII
+    $reused = Find-OrCreateHermesApiKey
+    Assert ($reused -eq 'persisted-hermes-key-16') "Existing device.json Hermes key was not reused: $reused"
+    Remove-Item -LiteralPath $ConfigPath -Force
+    $generated = Find-OrCreateHermesApiKey
+    Assert ($generated -match '^[0-9a-f]{64}$') "Generated Hermes key was not a 32-byte hex string: $generated"
+  } finally {
+    $env:USERPROFILE = $previousProfile
+    $env:APPDATA = $previousAppData
+    [Environment]::SetEnvironmentVariable('API_SERVER_KEY', $previousProcessKey, 'Process')
+  }
+
+  Write-Output (@{ ok = $true; tests = 8; platform = 'windows'; temporaryRoot = $testRoot } | ConvertTo-Json -Compress)
 } catch {
   $testError = $_
 } finally {

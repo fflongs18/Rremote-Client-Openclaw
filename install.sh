@@ -58,7 +58,9 @@ if [[ -n "$ENROLL_URL" ]]; then
   say '正在获取安全安装配置'
   curl --http1.1 --retry 3 --retry-delay 2 --fail --show-error --location --connect-timeout 15 --max-time 60 -X POST -H 'Content-Type: application/json' "$ENROLL_URL" -o "$enrollment_file" || fail 'unable to obtain installation configuration'
   json_value() { plutil -extract "$1" raw -o - "$enrollment_file" 2>/dev/null || true; }
-  HUB_URL="$(json_value hubUrl)"; PAIRING_CODE="$(json_value pairingCode)"; DEVICE_NAME="$(json_value deviceName)"; MANIFEST_URL="$(json_value manifestUrl)"; OPENCLAW_URL="$(json_value openClawUrl)"; HERMES_URL="$(json_value hermesUrl)"; HERMES_API_KEY="$(json_value hermesApiKey)"; DEFAULT_RUNTIME="$(json_value defaultRuntime)"
+  HUB_URL="$(json_value hubUrl)"; PAIRING_CODE="$(json_value pairingCode)"; DEVICE_NAME="$(json_value deviceName)"; MANIFEST_URL="$(json_value manifestUrl)"; OPENCLAW_URL="$(json_value openClawUrl)"; HERMES_URL="$(json_value hermesUrl)"; DEFAULT_RUNTIME="$(json_value defaultRuntime)"
+  enrolled_hermes_key="$(json_value hermesApiKey)"
+  [[ -n "$enrolled_hermes_key" ]] && HERMES_API_KEY="$enrolled_hermes_key"
   [[ "$(json_value requireHermes)" == "true" ]] && REQUIRE_HERMES=1
   [[ "$(json_value startHermes)" == "true" ]] && START_HERMES=1
 fi

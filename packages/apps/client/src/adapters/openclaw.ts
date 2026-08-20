@@ -18,6 +18,7 @@ export class OpenClawAdapter implements AgentRuntime {
   private readonly client: OpenClawClient;
   private connected = false;
   private connecting: Promise<void> | null = null;
+  private lastError: string | undefined;
 
   constructor(options: OpenClawAdapterOptions) {
     this.client = new OpenClawClient({
@@ -28,14 +29,21 @@ export class OpenClawAdapter implements AgentRuntime {
       deviceIdentityPath: options.deviceIdentityPath,
     });
     this.client.on("disconnected", () => { this.connected = false; });
-    this.client.on("error", (error) => console.error("OpenClaw runtime error", error));
+    this.client.on("error", (error) => {
+      this.lastError = error instanceof Error ? error.message : String(error);
+      console.error("OpenClaw runtime error", error);
+    });
   }
 
   async connect(): Promise<void> {
     if (this.connected) return;
     if (!this.connecting) {
       this.connecting = this.client.connect()
-        .then(() => { this.connected = true; })
+        .then(() => { this.connected = true; this.lastError = undefined; })
+        .catch((error) => {
+          this.lastError = error instanceof Error ? error.message : String(error);
+          throw error;
+        })
         .finally(() => { this.connecting = null; });
     }
     await this.connecting;
@@ -71,6 +79,6 @@ export class OpenClawAdapter implements AgentRuntime {
   }
 
   async health(): Promise<RuntimeHealth> {
-    return { ok: this.connected, connected: this.connected };
+    return { ok: this.connected, connected: this.connected, ...(this.lastError ? { detail: this.lastError } : {}) };
   }
 }

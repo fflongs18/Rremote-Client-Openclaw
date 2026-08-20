@@ -19,6 +19,7 @@ HERMES_WORKING_DIRECTORY=""
 NO_AUTOSTART=0
 REQUIRE_HERMES=0
 START_HERMES=0
+AUTO_HERMES=1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -49,6 +50,36 @@ fail() {
   exit 1
 }
 
+discover_hermes_key() {
+  [[ -n "$HERMES_API_KEY" ]] && return 0
+  local candidate file
+  for file in "$HOME/.hermes/config.json" "$HOME/.config/hermes/config.json" "$HOME/.hermes.json"; do
+    [[ -f "$file" ]] || continue
+    candidate="$($NODE_PATH --input-type=module --eval 'import fs from "node:fs";try{const c=JSON.parse(fs.readFileSync(process.argv[1],"utf8").replace(/^\uFEFF/,""));const v=c.API_SERVER_KEY??c.apiServerKey??c.api_key??c.apiKey??c.server?.key??"";if(typeof v==="string")process.stdout.write(v)}catch{}' "$file")"
+    [[ ${#candidate} -ge 16 ]] && { HERMES_API_KEY="$candidate"; return 0; }
+  done
+  if [[ -f "$CONFIG_PATH" ]]; then
+    candidate="$($NODE_PATH --input-type=module --eval 'import fs from "node:fs";try{const c=JSON.parse(fs.readFileSync(process.argv[1],"utf8").replace(/^\uFEFF/,""));const v=c?.hermes?.apiKey??"";if(typeof v==="string")process.stdout.write(v)}catch{}' "$CONFIG_PATH")"
+    [[ ${#candidate} -ge 16 ]] && { HERMES_API_KEY="$candidate"; return 0; }
+  fi
+  HERMES_API_KEY="$($NODE_PATH --input-type=module --eval 'import crypto from "node:crypto";console.log(crypto.randomBytes(32).toString("hex"))')"
+}
+
+start_hermes_launchd() {
+  local port
+  port="$($NODE_PATH --input-type=module --eval 'console.log(new URL(process.argv[1]).port||8642)' "$HERMES_URL")"
+  local plist="$HOME/Library/LaunchAgents/com.remote-oc.hermes-gateway.plist"
+  mkdir -p "$(dirname "$plist")"
+  local log_dir="$HOME/Library/Logs/Remote-OC"
+  mkdir -p "$log_dir"
+  cat > "$plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>Label</key><string>com.remote-oc.hermes-gateway</string><key>ProgramArguments</key><array><string>$(command -v "$HERMES_EXECUTABLE")</string><string>gateway</string></array><key>EnvironmentVariables</key><dict><key>API_SERVER_ENABLED</key><string>true</string><key>API_SERVER_HOST</key><string>127.0.0.1</string><key>API_SERVER_PORT</key><string>$port</string><key>API_SERVER_KEY</key><string>$HERMES_API_KEY</string></dict><key>StandardOutPath</key><string>$log_dir/hermes.out.log</string><key>StandardErrorPath</key><string>$log_dir/hermes.err.log</string><key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>
+EOF
+  launchctl bootout "gui/$(id -u)" "$plist" >/dev/null 2>&1 || true
+  launchctl bootstrap "gui/$(id -u)" "$plist" >/dev/null 2>&1 || launchctl load -w "$plist" >/dev/null 2>&1 || true
+}
+
 [[ "$(uname -s)" == "Darwin" ]] || fail 'install-macos.sh must run on macOS'
 [[ -n "$HUB_URL" && -n "$PAIRING_CODE" ]] || fail 'Hub URL and one-time pairing code are required'
 NODE_PATH="$PACKAGE_ROOT/runtime/node"
@@ -61,18 +92,17 @@ APP_ROOT="$PACKAGE_ROOT/app"
 test_hermes() {
   local auth=()
   [[ -z "$HERMES_API_KEY" ]] || auth=(-H "Authorization: Bearer $HERMES_API_KEY")
-  curl -fsS --max-time 5 "${auth[@]}" "${HERMES_URL%/}/v1/capabilities" | "$NODE_PATH" --input-type=module --eval 'let s="";for await(const c of process.stdin)s+=c;const f=JSON.parse(s).features||{};if(!(f.run_submission===true&&f.run_events_sse===true&&f.run_stop===true))process.exit(1)'
+  local response
+  response="$(curl -fsS --max-time 5 "${auth[@]}" "${HERMES_URL%/}/v1/capabilities" 2>/dev/null)" || return 1
+  printf '%s' "$response" | "$NODE_PATH" --input-type=module --eval 'let s="";for await(const c of process.stdin)s+=c;try{const f=JSON.parse(s).features||{};if(!(f.run_submission===true&&f.run_events_sse===true&&f.run_stop===true))process.exit(1)}catch{process.exit(1)}' 2>/dev/null
 }
-if [[ "$REQUIRE_HERMES" -eq 1 || "$START_HERMES" -eq 1 ]]; then
-  [[ ${#HERMES_API_KEY} -ge 16 ]] || fail 'Hermes API key must contain at least 16 characters'
-  if ! test_hermes && [[ "$START_HERMES" -eq 1 ]]; then
-    command -v "$HERMES_EXECUTABLE" >/dev/null 2>&1 || fail 'Hermes executable was not found'
-    HERMES_PORT="$($NODE_PATH --input-type=module --eval 'console.log(new URL(process.argv[1]).port||8642)' "$HERMES_URL")"
-    if [[ -n "$HERMES_WORKING_DIRECTORY" ]]; then cd "$HERMES_WORKING_DIRECTORY"; fi
-    API_SERVER_ENABLED=true API_SERVER_HOST=127.0.0.1 API_SERVER_PORT="$HERMES_PORT" API_SERVER_KEY="$HERMES_API_KEY" nohup "$HERMES_EXECUTABLE" gateway >/dev/null 2>&1 &
-    for _ in 1 2 3 4 5 6 7 8 9 10; do test_hermes && break; sleep 1; done
+if [[ "$AUTO_HERMES" -eq 1 ]] && command -v "$HERMES_EXECUTABLE" >/dev/null 2>&1; then
+  discover_hermes_key
+  if ! test_hermes; then
+    start_hermes_launchd
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do test_hermes && break; sleep 1; done
   fi
-  test_hermes || fail 'Hermes Runs API is not ready'
+  if [[ "$REQUIRE_HERMES" -eq 1 ]]; then test_hermes || fail 'Hermes Runs API is not ready'; fi
 fi
 
 mkdir -p "$INSTALL_DIR" "$(dirname "$CONFIG_PATH")"
@@ -83,6 +113,9 @@ cp "$PACKAGE_ROOT/uninstall-macos.sh" "$INSTALL_DIR/uninstall-macos.sh"
 chmod 700 "$INSTALL_DIR/uninstall-macos.sh"
 INSTALLED_NODE="$INSTALL_DIR/runtime/node"
 INSTALLED_APP="$INSTALL_DIR/app"
+if [[ -z "$OPENCLAW_TOKEN" && -f "$HOME/.openclaw/openclaw.json" ]]; then
+  OPENCLAW_TOKEN="$($INSTALLED_NODE --input-type=module --eval 'import fs from "node:fs";try{const c=JSON.parse(fs.readFileSync(process.argv[1],"utf8").replace(/^\uFEFF/,""));const token=c?.gateway?.auth?.token??c?.gateway?.token??c?.auth?.token??c?.token??"";if(typeof token==="string")process.stdout.write(token)}catch{}' "$HOME/.openclaw/openclaw.json")"
+fi
 export REMOTE_CLIENT_CONFIG="$CONFIG_PATH"
 export REMOTE_OC_PAIRING_CODE="$PAIRING_CODE"
 export OPENCLAW_GATEWAY_TOKEN="$OPENCLAW_TOKEN"
@@ -100,7 +133,7 @@ chmod 600 "$CONFIG_PATH" 2>/dev/null || true
 
 # Public controllers terminate Agent WebSockets at /ws. Repair identities created by
 # older installers that paired successfully before this path was included.
-"$INSTALLED_NODE" --input-type=module --eval 'import fs from "node:fs";const p=process.argv[1],hub=process.argv[2],raw=JSON.parse(fs.readFileSync(p,"utf8"));const base=new URL(hub);base.protocol=base.protocol==="https:"?"wss:":"ws:";base.pathname="/ws";base.search="";base.hash="";raw.hubWsUrl=base.toString().replace(/\/$/,"");fs.writeFileSync(p,`${JSON.stringify(raw,null,2)}\n`,{mode:0o600});' "$CONFIG_PATH" "$HUB_URL" || fail 'Unable to configure Hub WebSocket endpoint'
+"$INSTALLED_NODE" --input-type=module --eval 'import fs from "node:fs";const p=process.argv[1],hub=process.argv[2],gateway=process.argv[3],token=process.argv[4],hermes=process.argv[5],key=process.argv[6],raw=JSON.parse(fs.readFileSync(p,"utf8"));const base=new URL(hub);base.protocol=base.protocol==="https:"?"wss:":"ws:";base.pathname="/ws";base.search="";base.hash="";raw.hubWsUrl=base.toString().replace(/\/$/,"");raw.openClaw={url:gateway,token:token||null};raw.hermes={...(raw.hermes||{}),url:hermes,apiKey:key||null};fs.writeFileSync(p,`${JSON.stringify(raw,null,2)}\n`,{mode:0o600});' "$CONFIG_PATH" "$HUB_URL" "$OPENCLAW_URL" "$OPENCLAW_TOKEN" "$HERMES_URL" "$HERMES_API_KEY" || fail 'Unable to configure runtime endpoints'
 
 LAUNCHER="$INSTALL_DIR/run-client.sh"
 printf '#!/usr/bin/env bash\nexport REMOTE_CLIENT_CONFIG=%q\nexport AGENT_RUNTIME=%q\nexec %q %q\n' "$CONFIG_PATH" "$DEFAULT_RUNTIME" "$INSTALLED_NODE" "$INSTALLED_APP/client/dist/index.js" > "$LAUNCHER"

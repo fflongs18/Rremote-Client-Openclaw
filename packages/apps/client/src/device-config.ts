@@ -80,7 +80,7 @@ export function saveDeviceConfig(config: DeviceConfig): void {
     renameSync(temporary, path);
     restrictWindowsAcl(path);
   } finally {
-    rmSync(temporary, { force: true });
+    try { rmSync(temporary, { force: true }); } catch { /* Preserve the original configuration error. */ }
   }
 }
 

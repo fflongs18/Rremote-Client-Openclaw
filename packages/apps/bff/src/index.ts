@@ -168,9 +168,9 @@ void hydrateRecentPushes();
 
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
-app.get("/release/install.ps1", (_req, res) => res.sendFile(resolve(repoRoot, "install.ps1")));
-app.get("/release/install.sh", (_req, res) => res.sendFile(resolve(repoRoot, "install.sh")));
-app.get("/release/release.json", (_req, res) => res.sendFile(resolve(repoRoot, "release.json")));
+app.get("/release/install.ps1", (_req, res) => { res.type("text/plain"); res.sendFile(resolve(repoRoot, "install.ps1")); });
+app.get("/release/install.sh", (_req, res) => { res.type("text/x-shellscript"); res.sendFile(resolve(repoRoot, "install.sh")); });
+app.get("/release/release.json", (_req, res) => { res.type("application/json"); res.sendFile(resolve(repoRoot, "release.json")); });
 app.get("/release/artifacts/:file", (req, res) => {
   if (!/^RemoteOpenClaw-[A-Za-z0-9._-]+\.(zip|tar\.gz)(\.sha256)?$/.test(req.params.file)) {
     res.status(404).send("Release artifact not found");
@@ -209,7 +209,39 @@ app.get("/api/enroll/:token/:platform", (req, res) => {
   if (req.params.platform === "macos") {
     res.send(`#!/usr/bin/env bash\nset -euo pipefail\nprintf '\\n[Remote-OC] 正在准备安装器...\\n'\ntmp=$(mktemp)\ntrap 'rm -f "$tmp"' EXIT\ncurl --http1.1 --retry 3 --retry-delay 2 --retry-all-errors --fail --show-error --location --connect-timeout 15 --max-time 300 --progress-bar '${root}' -o "$tmp"\nexec bash "$tmp" --enroll-url '${enrollUrl}'\n`);
   } else {
-    res.send(`$ErrorActionPreference = 'Stop'\n$tmp = Join-Path $env:TEMP 'remote-oc-install.ps1'\ntry { Invoke-WebRequest -UseBasicParsing -Uri '${root}' -OutFile $tmp; & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $tmp -EnrollUrl '${enrollUrl}' } finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }\n`);
+    res.send(`$ErrorActionPreference = 'Stop'
+$tmp = Join-Path $env:TEMP 'remote-oc-install.ps1'
+$headers = @{ 'ngrok-skip-browser-warning' = '1' }
+$downloadUri = '${root}'
+if ($downloadUri -match 'ngrok') { $downloadUri += '?ngrok-skip-browser-warning=1' }
+$exitCode = 1
+try {
+  $message = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('5q2j5Zyo5YeG5aSH5a6J6KOF5ZmoLi4u'))
+  Write-Host "\n[Remote-OC] $message"
+  for ($attempt = 1; $attempt -le 4; $attempt++) {
+    try { Invoke-WebRequest -UseBasicParsing -Headers $headers -Uri $downloadUri -OutFile $tmp; break }
+    catch {
+      $status = $null
+      try { $status = [int]$_.Exception.Response.StatusCode } catch {}
+      if (($status -ge 400 -and $status -lt 500) -or $attempt -eq 4) { throw }
+      Start-Sleep -Seconds 2
+    }
+  }
+  $content = Get-Content -LiteralPath $tmp -Raw
+  if (-not $content -or $content -match '(?im)^\\s*ERR_NGROK_\\d+\\s*$|^\\s*You are about to visit') { throw 'ngrok returned an interstitial page instead of the Remote-OC installer' }
+  $tokens = $null; $parseErrors = $null
+  [void][System.Management.Automation.Language.Parser]::ParseFile($tmp, [ref]$tokens, [ref]$parseErrors)
+  if ($parseErrors.Count -gt 0) { throw "Downloaded Remote-OC installer is not valid PowerShell: $($parseErrors[0].Message)" }
+  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $tmp -EnrollUrl '${enrollUrl}'
+  $exitCode = $LASTEXITCODE
+} catch {
+  Write-Error $_
+  $exitCode = 1
+} finally {
+  Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+}
+exit $exitCode
+`);
   }
 });
 
@@ -219,7 +251,7 @@ app.post("/api/enroll/:token/exchange", async (req, res, next) => {
     if (!session) { res.status(410).json({ error: "安装链接已失效或不存在" }); return; }
     const manifestUrl = process.env.REMOTE_OC_RELEASE_BASE_URL ? `${process.env.REMOTE_OC_RELEASE_BASE_URL.replace(/\/$/, "")}/release.json` : "";
     const hubUrl = process.env.JIANMU_PUBLIC_HTTP_URL || process.env.JIANMU_HTTP_URL || "http://127.0.0.1:3179";
-    res.json({ hubUrl, pairingCode: session.pairingCode, deviceName: session.nodeName, manifestUrl, defaultRuntime: process.env.DEFAULT_RUNTIME || "openclaw", openClawUrl: process.env.OPENCLAW_GATEWAY_URL || "ws://127.0.0.1:18789", hermesUrl: process.env.HERMES_API_URL || "http://127.0.0.1:8642", hermesApiKey: process.env.HERMES_API_KEY || "", requireHermes: process.env.REQUIRE_HERMES === "1", startHermes: process.env.START_HERMES === "1" });
+    res.json({ hubUrl, pairingCode: session.pairingCode, deviceName: session.nodeName, manifestUrl, defaultRuntime: process.env.DEFAULT_RUNTIME || "openclaw", openClawUrl: process.env.OPENCLAW_GATEWAY_URL || "ws://127.0.0.1:18789", hermesUrl: process.env.HERMES_API_URL || "http://127.0.0.1:8642", requireHermes: process.env.REQUIRE_HERMES === "1", startHermes: process.env.START_HERMES === "1" });
   } catch (error) { next(error); }
 });
 
@@ -431,6 +463,14 @@ const server = app.listen(port, host, () => {
   console.log(`OpenClaw Remote Control: http://${host}:${port}`);
 });
 const proxyWss = new WebSocketServer({ noServer: true });
+function closeProxyPeer(peer: WebSocket, code: number, reason: Buffer): void {
+  if (peer.readyState !== WebSocket.OPEN && peer.readyState !== WebSocket.CONNECTING) return;
+  if (code >= 1000 && code <= 4999 && code !== 1004 && code !== 1005 && code !== 1006 && code !== 1015) {
+    peer.close(code, reason.toString().slice(0, 123));
+  } else {
+    peer.terminate();
+  }
+}
 server.on("upgrade", (request, socket, head) => {
   if (!request.url?.startsWith("/ws")) { socket.destroy(); return; }
   proxyWss.handleUpgrade(request, socket, head, (downstream) => {
@@ -440,8 +480,8 @@ server.on("upgrade", (request, socket, head) => {
     downstream.on("message", (data) => upstream.readyState === WebSocket.OPEN ? upstream.send(data) : pending.push(data));
     upstream.on("open", () => { for (const data of pending) upstream.send(data); });
     upstream.on("message", (data) => { if (downstream.readyState === WebSocket.OPEN) downstream.send(data); });
-    upstream.on("close", (code, reason) => downstream.close(code, reason.toString()));
-    downstream.on("close", (code, reason) => upstream.close(code, reason.toString()));
+    upstream.on("close", (code, reason) => closeProxyPeer(downstream, code, reason));
+    downstream.on("close", (code, reason) => closeProxyPeer(upstream, code, reason));
     upstream.on("error", () => downstream.close(1011, "Hub connection failed"));
     downstream.on("error", () => upstream.close());
   });

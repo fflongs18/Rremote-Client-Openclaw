@@ -3,19 +3,19 @@
   "platforms": {
     "windows-x64": {
       "url": "artifacts/RemoteOpenClaw-0.1.0-win-x64.zip",
-      "sha256": "5c1478ce4d6b53e0220a0bbda1b44966361bcf6516dcedbdabe80918fadaecb0"
+      "sha256": "1010f80706f8c401300f6516d63130a88cfcc68d93a0275755ea5b63e372b861"
     },
     "windows-arm64": {
       "url": "artifacts/RemoteOpenClaw-0.1.0-win-arm64.zip",
-      "sha256": "60509c4f0e9844840d9cd12e145abcf7d3a5e38a044f827dc92b30fbaff267b5"
+      "sha256": "155c97fd20b516f842ce6853566766d025164075934c7dc66af7d42d3846aba0"
     },
     "macos-x64": {
       "url": "artifacts/RemoteOpenClaw-0.1.0-mac-x64.tar.gz",
-      "sha256": "6cee08f537e865950947ffc84fbff1c5909b06a72aa4ccb6450dbf00db9303b1"
+      "sha256": "a9a26180b55eaa2c6b42a8012aeec2667179fff703e93e75fc8f32a5e944d968"
     },
     "macos-arm64": {
       "url": "artifacts/RemoteOpenClaw-0.1.0-mac-arm64.tar.gz",
-      "sha256": "32f4cf37970bf8f95f94df30d4e80aecef5870fa2d811ca998b0d13a0099607d"
+      "sha256": "84b497175552f82097cd41193b3374a135cb534b2057a91a500e7eccac263d1d"
     }
   }
 }

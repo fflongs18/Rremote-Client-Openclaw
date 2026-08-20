@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
   [ValidateSet('x64', 'arm64')][string]$Architecture = 'arm64',
-  [string]$OutputDirectory = ''
+  [string]$OutputDirectory = '',
+  [string]$RuntimeNodePath = ''
 )
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
@@ -20,12 +21,18 @@ try {
   @{private=$true;type='module';dependencies=@{'@remote-oc/protocol'='file:./protocol';dotenv='^17.2.0';'openclaw-node'='0.14.0';ws='^8.18.0'}} | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $app 'package.json') -Encoding UTF8
   Push-Location $app; try { & npm.cmd install --omit=dev --ignore-scripts --no-audit --no-fund; if($LASTEXITCODE){throw 'Production dependency install failed'} } finally { Pop-Location }
   $protocol=Join-Path $app 'node_modules\@remote-oc\protocol'; Remove-Item $protocol -Recurse -Force -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Force -Path (Split-Path $protocol -Parent)|Out-Null; Copy-Item (Join-Path $app 'protocol') $protocol -Recurse
-  $releases=Invoke-RestMethod 'https://nodejs.org/dist/index.json'; $nodeRelease=$releases|Where-Object{$_.version-match'^v22\.'-and$_.lts}|Select-Object -First 1
-  $archiveName="node-$($nodeRelease.version)-darwin-$Architecture.tar.gz"; $base="https://nodejs.org/dist/$($nodeRelease.version)"; $checksums=Join-Path $tempRoot 'SHASUMS256.txt'; $archive=Join-Path $tempRoot $archiveName
-  Invoke-WebRequest "$base/SHASUMS256.txt" -OutFile $checksums; Invoke-WebRequest "$base/$archiveName" -OutFile $archive
-  $expected=((Get-Content $checksums|Where-Object{$_-match"\s+$([regex]::Escape($archiveName))$"})-split'\s+')[0].ToLowerInvariant(); if($expected-ne(Get-Sha256Hex $archive)){throw 'Portable Node.js checksum mismatch'}
-  & tar -xzf $archive -C $tempRoot; if($LASTEXITCODE){throw 'Node.js archive extraction failed'}
-  Copy-Item (Join-Path $tempRoot "node-$($nodeRelease.version)-darwin-$Architecture\bin\node") (Join-Path $stage 'runtime\node')
+  if ($RuntimeNodePath) {
+    if (-not (Test-Path -LiteralPath $RuntimeNodePath)) { throw "RuntimeNodePath was not found: $RuntimeNodePath" }
+    $expected = Get-Sha256Hex $RuntimeNodePath; $nodeRelease = @{ version = 'bundled-v22' }
+    Copy-Item -LiteralPath $RuntimeNodePath -Destination (Join-Path $stage 'runtime\node')
+  } else {
+    $releases=Invoke-RestMethod 'https://nodejs.org/dist/index.json'; $nodeRelease=$releases|Where-Object{$_.version-match'^v22\.'-and$_.lts}|Select-Object -First 1
+    $archiveName="node-$($nodeRelease.version)-darwin-$Architecture.tar.gz"; $base="https://nodejs.org/dist/$($nodeRelease.version)"; $checksums=Join-Path $tempRoot 'SHASUMS256.txt'; $archive=Join-Path $tempRoot $archiveName
+    Invoke-WebRequest "$base/SHASUMS256.txt" -OutFile $checksums; Invoke-WebRequest "$base/$archiveName" -OutFile $archive
+    $expected=((Get-Content $checksums|Where-Object{$_-match"\s+$([regex]::Escape($archiveName))$"})-split'\s+')[0].ToLowerInvariant(); if($expected-ne(Get-Sha256Hex $archive)){throw 'Portable Node.js checksum mismatch'}
+    & tar -xzf $archive -C $tempRoot; if($LASTEXITCODE){throw 'Node.js archive extraction failed'}
+    Copy-Item (Join-Path $tempRoot "node-$($nodeRelease.version)-darwin-$Architecture\bin\node") (Join-Path $stage 'runtime\node')
+  }
   Copy-Item (Join-Path $repo 'installer\install-macos.sh') (Join-Path $stage 'install-macos.sh'); Copy-Item (Join-Path $repo 'installer\uninstall-macos.sh') (Join-Path $stage 'uninstall-macos.sh')
   $files=Get-ChildItem $stage -File -Recurse|ForEach-Object{@{path=$_.FullName.Substring($stage.Length+1).Replace('\','/');sha256=Get-Sha256Hex $_.FullName;size=$_.Length}}
   $manifestJson = @{packageVersion=$version;platform='macos';architecture=$Architecture;nodeVersion=$nodeRelease.version;nodeArchiveSha256=$expected;createdAt=[DateTime]::UtcNow.ToString('o');files=$files}|ConvertTo-Json -Depth 6
